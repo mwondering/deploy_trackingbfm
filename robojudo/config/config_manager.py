@@ -14,6 +14,7 @@ class ConfigManager:
     def parse_config(self):
         # cfg_class = getattr(robojudo.config, self.config_name)
         cfg_class = cfg_registry.get(self.config_name)
+        # import pdb;pdb.set_trace()
         cfg_raw = cfg_class()
         # cfg_raw = make_g1_pipeline_cfg(
         #     env="g1_mujoco_env",

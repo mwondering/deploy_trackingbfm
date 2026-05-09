@@ -1,6 +1,7 @@
 from robojudo.config import cfg_registry
 from robojudo.controller.ctrl_cfgs import (
     JoystickCtrlCfg,  # noqa: F401
+    KeyboardAmoCtrlCfg,  # noqa: F401
     KeyboardCtrlCfg,  # noqa: F401
     UnitreeCtrlCfg,  # noqa: F401
 )
@@ -78,6 +79,22 @@ class g1_real(g1):
     ]
 
     do_safety_check: bool = True  # enable safety check for real robot
+
+
+@cfg_registry.register
+class g1_amo(RlPipelineCfg):
+    """
+    Unitree G1 robot configuration, AMO Policy, keyboard controlled Sim2Sim.
+    """
+
+    robot: str = "g1"
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg()
+
+    ctrl: list[KeyboardAmoCtrlCfg] = [
+        KeyboardAmoCtrlCfg(),
+    ]
+
+    policy: G1AmoPolicyCfg = G1AmoPolicyCfg()
 
 
 @cfg_registry.register

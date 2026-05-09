@@ -2,6 +2,9 @@ from robojudo.config import cfg_registry
 from robojudo.controller.ctrl_cfgs import (
     JoystickCtrlCfg,  # noqa: F401
     KeyboardCtrlCfg,  # noqa: F401
+    KeyboardTrackingBfmCtrlCfg,  # noqa: F401
+    PicoLightSparseCtrlCfg,  # noqa: F401
+    PicoRetargetTrackingBfmCtrlCfg,  # noqa: F401
     UnitreeCtrlCfg,  # noqa: F401
 )
 from robojudo.pipeline.pipeline_cfgs import (
@@ -27,6 +30,7 @@ from .policy.g1_beyondmimic_policy_cfg import G1BeyondMimicPolicyCfg  # noqa: F4
 from .policy.g1_h2h_policy_cfg import G1H2HPolicyCfg  # noqa: F401
 from .policy.g1_kungfubot_policy_cfg import G1KungfuBotGeneralPolicyCfg, G1KungfuBotPolicyCfg  # noqa: F401
 from .policy.g1_smooth_policy_cfg import G1SmoothPolicyCfg  # noqa: F401
+from .policy.g1_tracking_bfm_sparse_onnx_policy_cfg import G1TrackingBfmSparseOnnxPolicyCfg  # noqa: F401
 from .policy.g1_twist_policy_cfg import G1TwistPolicyCfg  # noqa: F401
 from .policy.g1_unitree_policy_cfg import G1UnitreePolicyCfg, G1UnitreeWoGaitPolicyCfg  # noqa: F401
 
@@ -46,3 +50,58 @@ class g1_dev(RlPipelineCfg):
     ]
 
     policy: G1UnitreePolicyCfg = G1UnitreePolicyCfg()
+
+
+@cfg_registry.register
+class g1_tracking_bfm_pico_light_sim(RlPipelineCfg):
+    """Lightweight Pico -> sparse tracking_bfm ONNX -> G1 MuJoCo."""
+
+    robot: str = "g1"
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg(
+        born_place_align=False,
+        random_heading=True,
+    )
+
+    ctrl: list[PicoLightSparseCtrlCfg] = [
+        PicoLightSparseCtrlCfg(),
+    ]
+
+    policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg()
+
+
+@cfg_registry.register
+class g1_tracking_bfm_pico_retarget_sim(RlPipelineCfg):
+    """Pico full-body retarget -> sparse tracking_bfm ONNX -> G1 MuJoCo."""
+
+    robot: str = "g1"
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg(
+        born_place_align=False,
+        random_heading=True,
+    )
+
+    ctrl: list[PicoRetargetTrackingBfmCtrlCfg] = [
+        PicoRetargetTrackingBfmCtrlCfg(),
+    ]
+
+    policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg(
+        ctrl_type="PicoRetargetTrackingBfmCtrl",
+    )
+
+
+@cfg_registry.register
+class g1_tracking_bfm_keyboard_sim(RlPipelineCfg):
+    """Keyboard-only sparse tracking_bfm ONNX deployment for local MuJoCo testing."""
+
+    robot: str = "g1"
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg(
+        born_place_align=False,
+        random_heading=True,
+    )
+
+    ctrl: list[KeyboardTrackingBfmCtrlCfg] = [
+        KeyboardTrackingBfmCtrlCfg(),
+    ]
+
+    policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg(
+        ctrl_type="KeyboardTrackingBfmCtrl",
+    )

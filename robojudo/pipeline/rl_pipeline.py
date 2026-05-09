@@ -51,10 +51,16 @@ class PolicyWrapper:
     def get_pd_target(self, obs):
         action = self.policy.get_action(obs)
         pd_target = action + self.policy.default_pos
-        return self.actions_adapter.fit(pd_target, template=self.env_dof_cfg.default_pos)
+        pd_target = self.actions_adapter.fit(pd_target, template=self.env_dof_cfg.default_pos)
+        if hasattr(self.policy, "override_pd_target"):
+            pd_target = self.policy.override_pd_target(pd_target)
+        return pd_target
 
     def get_init_dof_pos(self):
-        return self.actions_adapter.fit(self.policy.get_init_dof_pos(), template=self.env_dof_cfg.default_pos)
+        init_dof_pos = self.actions_adapter.fit(self.policy.get_init_dof_pos(), template=self.env_dof_cfg.default_pos)
+        if hasattr(self.policy, "override_pd_target"):
+            init_dof_pos = self.policy.override_pd_target(init_dof_pos)
+        return init_dof_pos
 
     def __getattr__(self, name):
         """Fallback: delegate other func to the wrapped policy."""

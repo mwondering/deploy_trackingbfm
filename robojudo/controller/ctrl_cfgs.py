@@ -26,6 +26,44 @@ class KeyboardCtrlCfg(CtrlCfg):
     }
 
 
+class KeyboardAmoCtrlCfg(KeyboardCtrlCfg):
+    ctrl_type: str = "KeyboardAmoCtrl"
+
+    # Keyboard -> virtual joystick axes for AMO locomotion control.
+    axis_key_map: dict[str, tuple[str, str]] = {
+        "LeftX": ("a", "d"),
+        "LeftY": ("w", "s"),
+        "RightX": ("e", "q"),
+        "RightY": ("r", "f"),
+    }
+
+    # Map keyboard buttons to virtual gamepad button events consumed by AMO.
+    button_key_map: dict[str, str] = {
+        "Key.space": "Y",
+    }
+
+
+class KeyboardTrackingBfmCtrlCfg(CtrlCfg):
+    ctrl_type: str = "KeyboardTrackingBfmCtrl"
+
+    vx_scale: float = 1.0
+    vy_scale: float = 0.5
+    wz_scale: float = 1.0
+
+    base_height_init: float = 0.75
+    base_height_min: float = 0.35
+    base_height_max: float = 0.85
+    base_height_step: float = 0.02
+
+    ee_pos_step: float = 0.03
+    ee_neutral_left: tuple[float, float, float] = (0.20, 0.20, 0.20)
+    ee_neutral_right: tuple[float, float, float] = (0.20, -0.20, 0.20)
+
+    triggers: dict[str, str] = {
+        "Key.esc": "[SHUTDOWN]",
+    }
+
+
 class JoystickCtrlCfg(CtrlCfg):
     ctrl_type: str = "JoystickCtrl"
 
@@ -161,3 +199,41 @@ class TwistRedisCtrlCfg(CtrlCfg):
     redis_key: str = "action_mimic_g1"  # key to get command data from redis
 
     buffer_size: int = 5  # size of the data buffer to store recent commands
+
+
+class PicoLightSparseCtrlCfg(CtrlCfg):
+    ctrl_type: str = "PicoLightSparseCtrl"
+
+    vx_scale: float = 1.0
+    vy_scale: float = 0.5
+    wz_scale: float = 1.0
+
+    base_height_init: float = 0.75
+    base_height_min: float = 0.35
+    base_height_max: float = 0.85
+    base_height_rate: float = 0.3
+
+    ee_scale: float = 0.8
+    ee_neutral_left: tuple[float, float, float] = (0.20, 0.20, 0.20)
+    ee_neutral_right: tuple[float, float, float] = (0.20, -0.20, 0.20)
+
+    stick_deadzone: float = 0.08
+    trigger_deadzone: float = 0.1
+
+
+class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
+    ctrl_type: str = "PicoRetargetTrackingBfmCtrl"
+
+    robot: str = "unitree_g1"
+    actual_human_height: float = 1.6
+    offset_to_ground: bool = True
+    root_z_offset: float = 0.0
+
+    anchor_body_name: str = "pelvis"
+    left_ee_body_name: str = "left_wrist_yaw_link"
+    right_ee_body_name: str = "right_wrist_yaw_link"
+
+    triggers: dict[str, str] = {
+        "LeftController.key_one": "[SHUTDOWN]",
+        "LeftController.axis_click": "[SHUTDOWN]",
+    }

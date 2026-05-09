@@ -53,6 +53,27 @@ class PolicyCfg(Config):
         return self
 
 
+class TrackingBfmSparseOnnxPolicyCfg(PolicyCfg):
+    policy_type: str = "TrackingBfmSparseOnnxPolicy"
+    robot: str = "g1"
+    disable_autoload: bool = True
+
+    onnx_path: str
+    obs_group: str | None = None
+    ctrl_type: str = "PicoLightSparseCtrl"
+    env_yaml_path: str | None = None
+    expected_obs_dim: int | None = None
+    action_scales: list[float] | None = None
+
+    @property
+    def policy_file(self) -> str:
+        return self.onnx_path
+
+    action_scale: float = 1.0
+    action_clip: float | None = None
+    action_beta: float = 1.0
+
+
 class UnitreePolicyCfg(PolicyCfg):
     class ObsScalesCfg(Config):
         dof_pos: float = 1.0
