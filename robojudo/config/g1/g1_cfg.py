@@ -3,6 +3,7 @@ from robojudo.controller.ctrl_cfgs import (
     JoystickCtrlCfg,  # noqa: F401
     KeyboardAmoCtrlCfg,  # noqa: F401
     KeyboardCtrlCfg,  # noqa: F401
+    UnitreeAmoCtrlCfg,  # noqa: F401
     UnitreeCtrlCfg,  # noqa: F401
 )
 from robojudo.pipeline.pipeline_cfgs import (
@@ -31,6 +32,7 @@ from .policy.g1_protomotions_tracker_cfg import ProtoMotionsTrackerPolicyCfg  # 
 from .policy.g1_smooth_policy_cfg import G1SmoothPolicyCfg  # noqa: F401
 from .policy.g1_twist_policy_cfg import G1TwistPolicyCfg  # noqa: F401
 from .policy.g1_unitree_policy_cfg import G1UnitreePolicyCfg, G1UnitreeWoGaitPolicyCfg  # noqa: F401
+from robojudo.tools.debug_log import DebugCfg  # noqa: F401
 
 
 # ======================== Basic Configs ======================== #
@@ -95,6 +97,47 @@ class g1_amo(RlPipelineCfg):
     ]
 
     policy: G1AmoPolicyCfg = G1AmoPolicyCfg()
+
+
+@cfg_registry.register
+class g1_amo_real(g1_real):
+    """
+    Unitree G1 robot configuration, AMO Policy, Unitree remote controlled Sim2Real.
+    """
+
+    ctrl: list[UnitreeAmoCtrlCfg] = [
+        UnitreeAmoCtrlCfg(),
+    ]
+
+    policy: G1AmoPolicyCfg = G1AmoPolicyCfg()
+
+    do_safety_check: bool = True
+
+
+@cfg_registry.register
+class g1_amo_real_profile(g1_amo_real):
+    """
+    AMO real-robot timing profile with the default real env settings.
+    """
+
+    debug: DebugCfg = DebugCfg(profile_timing=True, profile_interval=25)
+
+
+@cfg_registry.register
+class g1_amo_real_profile_no_fk(g1_amo_real):
+    """
+    AMO real-robot timing profile with FK disabled to isolate kinematics overhead.
+    """
+
+    env: G1RealEnvCfg = G1RealEnvCfg(
+        env_type="UnitreeCppEnv",
+        unitree=G1UnitreeCfg(
+            net_if="eth0",
+        ),
+        update_with_fk=False,
+    )
+
+    debug: DebugCfg = DebugCfg(profile_timing=True, profile_interval=25)
 
 
 @cfg_registry.register

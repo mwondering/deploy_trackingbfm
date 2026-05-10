@@ -17,6 +17,7 @@ class AMOPolicy(Policy):
     AMO_ORIGINAL_UPPER_BODY_DEFAULT_POS = np.array(
         [0.5, 0.0, 0.2, 0.3, 0.5, 0.0, -0.2, 0.3], dtype=np.float32
     )
+    COMMAND_PRINT_INTERVAL_STEPS = 10
     G1_29DOF_UPPER_BODY_ENV_INDICES = np.array([15, 16, 17, 18, 22, 23, 24, 25], dtype=np.int64)
 
     cfg_policy: AMOPolicyCfg
@@ -114,6 +115,9 @@ class AMOPolicy(Policy):
         self._upper_body_transition_steps = max(1, int(1.0 / self.control_dt))
         self._upper_body_swing_step = 0
         self._upper_body_swing_period_steps = max(1, int(4.8 / self.control_dt))
+        self._last_command_print_step = -self.COMMAND_PRINT_INTERVAL_STEPS
+        self._stand_still_locked = False
+        self._target_yaw_from_velocity = 0.0
 
     def post_step_callback(self, commands=None):
         self.timestep += 1
@@ -137,6 +141,24 @@ class AMOPolicy(Policy):
             if mode_event is not None:
                 return mode_event
         return None
+
+    def _get_stand_still_event(self, ctrl_data):
+        for controller_data in ctrl_data.values():
+            if not isinstance(controller_data, dict):
+                continue
+            stand_still_event = controller_data.get("stand_still_event")
+            if stand_still_event is not None:
+                return stand_still_event
+        return None
+
+    def _get_yaw_command_mode(self, ctrl_data):
+        for controller_data in ctrl_data.values():
+            if not isinstance(controller_data, dict):
+                continue
+            yaw_command_mode = controller_data.get("yaw_command_mode")
+            if yaw_command_mode is not None:
+                return yaw_command_mode
+        return "target"
 
     def _start_upper_body_transition(self, next_mode: str):
         self._upper_body_transition_start = self._upper_body_target.copy()
@@ -230,10 +252,73 @@ class AMOPolicy(Policy):
 
         return commands
 
+    @staticmethod
+    def _is_in_place_stand_command(commands: np.ndarray) -> bool:
+        return abs(commands[0]) < 0.1 and abs(commands[1]) < 1e-3 and abs(commands[2]) < 0.1
+
+    @staticmethod
+    def _is_in_place_stand_velocity_command(commands: np.ndarray, yaw_rate: float) -> bool:
+        return abs(commands[0]) < 0.1 and abs(yaw_rate) < 1e-3 and abs(commands[2]) < 0.1
+
+    def _request_stand_still(self, stand_still_event: str):
+        if stand_still_event == "toggle":
+            self._stand_still_locked = not getattr(self, "_stand_still_locked", False)
+        elif stand_still_event == "lock":
+            self._stand_still_locked = True
+        elif stand_still_event == "unlock":
+            self._stand_still_locked = False
+
+    def _apply_stand_still_lock(self, commands: np.ndarray) -> np.ndarray:
+        if not getattr(self, "_stand_still_locked", False):
+            return commands
+        commands = commands.copy()
+        commands[0:3] = 0.0
+        self._target_yaw_from_velocity = 0.0
+        return commands
+
+    def _apply_yaw_command_mode(self, commands: np.ndarray, yaw_command_mode: str) -> np.ndarray:
+        commands = commands.copy()
+        if yaw_command_mode == "velocity":
+            self._target_yaw_from_velocity = getattr(self, "_target_yaw_from_velocity", 0.0) + commands[1] * self.control_dt
+            self._target_yaw_from_velocity = float(
+                np.remainder(self._target_yaw_from_velocity + np.pi, 2 * np.pi) - np.pi
+            )
+            commands[1] = self._target_yaw_from_velocity
+        else:
+            self._target_yaw_from_velocity = float(commands[1])
+        return commands
+
+    def _print_received_commands(self):
+        last_step = getattr(self, "_last_command_print_step", -self.COMMAND_PRINT_INTERVAL_STEPS)
+        timestep = getattr(self, "timestep", 0)
+        if timestep - last_step < self.COMMAND_PRINT_INTERVAL_STEPS:
+            return
+        self._last_command_print_step = timestep
+        print(
+            "AMO policy command | "
+            f"vx: {self.cmd[0]:+0.3f} "
+            f"yaw_target: {self.cmd[1]:+0.3f} "
+            f"yaw_rate: {getattr(self, '_last_yaw_rate_command', 0.0):+0.3f} "
+            f"vy: {self.cmd[2]:+0.3f} "
+            f"height: {0.75 + self.cmd[3]:+0.3f} "
+            f"torso_yaw: {self.cmd[4]:+0.3f} "
+            f"torso_pitch: {self.cmd[5]:+0.3f} "
+            f"torso_roll: {self.cmd[6]:+0.3f} "
+            f"arm_toggle: {self.cmd[7]:.0f} "
+            f"stand_still_lock: {getattr(self, '_stand_still_locked', False)} "
+            f"in_place_stand: {self._in_place_stand_flag}"
+        )
+
     def get_observation(self, env_data, ctrl_data):
         if (mode_event := self._get_upper_body_mode_event(ctrl_data)) is not None:
             self._request_upper_body_mode(mode_event)
+        if (stand_still_event := self._get_stand_still_event(ctrl_data)) is not None:
+            self._request_stand_still(stand_still_event)
+        yaw_command_mode = self._get_yaw_command_mode(ctrl_data)
         self.cmd = self._get_commands(ctrl_data)
+        self.cmd = self._apply_stand_still_lock(self.cmd)
+        self._last_yaw_rate_command = float(self.cmd[1]) if yaw_command_mode == "velocity" else 0.0
+        self.cmd = self._apply_yaw_command_mode(self.cmd, yaw_command_mode)
 
         dof_pos = env_data.dof_pos
         dof_vel = env_data.dof_vel
@@ -242,7 +327,12 @@ class AMOPolicy(Policy):
 
         rpy = quatToEuler(base_quat)
 
-        self._in_place_stand_flag = np.abs(self.cmd[0]) < 0.1
+        if yaw_command_mode == "velocity":
+            command_requests_stand = self._is_in_place_stand_velocity_command(self.cmd, self._last_yaw_rate_command)
+        else:
+            command_requests_stand = self._is_in_place_stand_command(self.cmd)
+        self._in_place_stand_flag = getattr(self, "_stand_still_locked", False) or command_requests_stand
+        self._print_received_commands()
         self.target_yaw = self.cmd[1]
         dyaw = rpy[2] - self.target_yaw
         dyaw = np.remainder(dyaw + np.pi, 2 * np.pi) - np.pi

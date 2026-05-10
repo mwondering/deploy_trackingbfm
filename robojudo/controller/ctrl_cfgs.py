@@ -97,6 +97,32 @@ class UnitreeCtrlCfg(JoystickCtrlCfg):
     }
 
 
+class UnitreeAmoCtrlCfg(UnitreeCtrlCfg):
+    ctrl_type: str = "UnitreeAmoCtrl"
+
+    # AMO direct command ranges.
+    vx_limit: float = 1.0
+    vy_limit: float = 0.4
+    yaw_rate_limit: float = 0.8
+    height_upper_limit: float = 0.03
+    height_lower_limit: float = -0.3
+
+    torso_yaw_limit: float = 0.3
+    torso_pitch_limit: float = 0.2
+    torso_roll_limit: float = 0.2
+
+    torso_yaw_step: float = 0.05
+    torso_pitch_step: float = 0.05
+    torso_roll_step: float = 0.05
+
+    axis_deadzone: float = 0.05
+    enable_height_axis: bool = True
+
+    triggers: dict[str, str] = {
+        "A": "[SHUTDOWN]",
+    }
+
+
 class MotionCtrlCfg(CtrlCfg):
     class PhcCfg(Config):
         robot_config_file: str
