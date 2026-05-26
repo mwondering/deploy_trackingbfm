@@ -94,6 +94,13 @@ class UnitreeEnvCfg(RobotEnvCfg):
     """Mapping from env dof to motor index, None for direct mapping"""
     weak_motor: list[int] = []
 
+    limit_pd_target_effort: bool = True
+    """Clamp real-robot position targets to the training actuator effort range before sending."""
+    clip_pd_target: bool = False
+    """Optionally clip real-robot position targets to configured joint position limits before sending."""
+    pd_target_max_delta: float | list[float] | None = None
+    """Optional maximum per-step target change in radians for real-robot position commands."""
+
     hand_retarget: None = None  # TODO
 
     @model_validator(mode="after")

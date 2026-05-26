@@ -89,3 +89,15 @@ def test_g1_tracking_bfm_sparse_policy_uses_knees_bent_default_pose() -> None:
     assert cfg.obs_dof.default_pos == expected
     assert cfg.action_dof.default_pos == expected
     assert cfg.action_dof.default_pos != cfg_registry.get("g1_tracking_bfm_keyboard_sim")().env.dof.default_pos
+
+
+def test_g1_tracking_bfm_sparse_dof_uses_training_effort_limits() -> None:
+    cfg = G1TrackingBfmSparseOnnxPolicyCfg()
+
+    assert cfg.action_dof.torque_limits == [
+        *[88.0, 139.0, 88.0, 139.0, 50.0, 50.0],
+        *[88.0, 139.0, 88.0, 139.0, 50.0, 50.0],
+        *[88.0, 50.0, 50.0],
+        *[25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0],
+        *[25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0],
+    ]

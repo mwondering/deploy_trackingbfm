@@ -19,8 +19,12 @@ class UnitreeCppEnv(Environment):
 
     def __init__(self, cfg_env: UnitreeEnvCfg, device="cpu"):
         self.enabled: bool = cfg_env.act
+        self._last_pd_target_cmd: np.ndarray | None = None
         super().__init__(cfg_env=cfg_env, device=device)
         self.RemoteControllerHandler = None
+        self.limit_pd_target_effort = cfg_env.limit_pd_target_effort
+        self.clip_pd_target = cfg_env.clip_pd_target
+        self.pd_target_max_delta = cfg_env.pd_target_max_delta
 
         cfg_unitree: UnitreeEnvCfg.UnitreeCfg = cfg_env.unitree
 
@@ -73,6 +77,7 @@ class UnitreeCppEnv(Environment):
             exit()
 
     def reset(self):
+        self._last_pd_target_cmd = None
         if self.born_place_align:  # TODO: merge
             self.born_place_align = False  # disable during reset
             self.update()
@@ -153,16 +158,7 @@ class UnitreeCppEnv(Environment):
 
     def step(self, pd_target, hand_pose=None):
         assert len(pd_target) == self.num_dofs, "pd_target len should be num_dofs of env"
-
-        # limits = self.position_limits
-        # pd_target_clipped = np.clip(pd_target, limits[:, 0], limits[:, 1])
-
-        # delta = pd_target - pd_target_clipped
-        # if np.any(delta != 0):
-        #     logger.warning(f"JOINT out of LIMIT-> {delta}")
-
-        # positions = pd_target_clipped
-        positions = pd_target
+        positions = self._filter_pd_target(pd_target)
         if self.enabled:
             self.unitree.step(positions.tolist())
 
@@ -176,6 +172,67 @@ class UnitreeCppEnv(Environment):
 
             if self.enabled:
                 self.unitree.step_hands(hand_pose[0], hand_pose[1])
+
+    def _filter_pd_target(self, pd_target) -> np.ndarray:
+        target = np.asarray(pd_target, dtype=np.float32).reshape(-1).copy()
+        assert target.shape[0] == self.num_dofs, "pd_target len should be num_dofs of env"
+
+        if not np.all(np.isfinite(target)):
+            logger.error("Non-finite pd_target detected; replacing with current joint positions")
+            target = self.dof_pos.astype(np.float32)
+
+        if getattr(self, "clip_pd_target", False):
+            limits = np.asarray(self.position_limits, dtype=np.float32)
+            clipped = np.clip(target, limits[:, 0], limits[:, 1])
+            if np.any(clipped != target):
+                max_violation = float(np.max(np.abs(target - clipped)))
+                logger.warning(f"PD target clipped to joint limits; max violation={max_violation:.4f} rad")
+            target = clipped
+
+        max_delta_raw = getattr(self, "pd_target_max_delta", None)
+        if max_delta_raw is not None:
+            max_delta = np.asarray(max_delta_raw, dtype=np.float32)
+            if max_delta.ndim == 0:
+                max_delta = np.full(self.num_dofs, float(max_delta), dtype=np.float32)
+            assert max_delta.shape[0] == self.num_dofs, "pd_target_max_delta len should be num_dofs of env"
+
+            reference = self._last_pd_target_cmd if self._last_pd_target_cmd is not None else self.dof_pos
+            reference = np.asarray(reference, dtype=np.float32)
+            limited = np.clip(target, reference - max_delta, reference + max_delta)
+            if np.any(limited != target):
+                max_limited = float(np.max(np.abs(target - reference)))
+                logger.warning(f"PD target delta limited; max requested step={max_limited:.4f} rad")
+            target = limited
+
+        if getattr(self, "limit_pd_target_effort", True):
+            target = self._limit_pd_target_effort(target)
+
+        self._last_pd_target_cmd = target.copy()
+        return target
+
+    def _limit_pd_target_effort(self, target: np.ndarray) -> np.ndarray:
+        stiffness = np.asarray(self.stiffness, dtype=np.float32)
+        damping = np.asarray(self.damping, dtype=np.float32)
+        effort = np.asarray(self.torque_limits, dtype=np.float32)
+        pos = np.asarray(self.dof_pos, dtype=np.float32)
+        vel = np.asarray(self.dof_vel, dtype=np.float32)
+
+        valid = (stiffness > 0.0) & np.isfinite(stiffness) & np.isfinite(damping) & np.isfinite(effort)
+        if not np.all(valid):
+            logger.error("Invalid PD effort limit inputs; leaving affected pd_target joints unclamped")
+
+        lower = np.full(self.num_dofs, -np.inf, dtype=np.float32)
+        upper = np.full(self.num_dofs, np.inf, dtype=np.float32)
+        lower[valid] = pos[valid] + (-effort[valid] + damping[valid] * vel[valid]) / stiffness[valid]
+        upper[valid] = pos[valid] + (effort[valid] + damping[valid] * vel[valid]) / stiffness[valid]
+
+        limited = np.clip(target, lower, upper)
+        if np.any(limited != target):
+            requested_effort = stiffness * (target - pos) - damping * vel
+            excess = np.maximum(np.abs(requested_effort) - effort, 0.0)
+            max_excess = float(np.max(excess[valid])) if np.any(valid) else 0.0
+            logger.warning(f"PD target effort limited to training actuator range; max excess={max_excess:.4f} Nm")
+        return limited.astype(np.float32, copy=False)
 
     def shutdown(self):
         # self.set_damping_mode()
