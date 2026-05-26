@@ -240,8 +240,20 @@ class PicoLightSparseCtrlCfg(CtrlCfg):
     base_height_rate: float = 0.3
 
     ee_scale: float = 0.8
-    ee_neutral_left: tuple[float, float, float] = (0.20, 0.20, 0.20)
-    ee_neutral_right: tuple[float, float, float] = (0.20, -0.20, 0.20)
+    ee_default_left_pos_b: tuple[float, float, float] = (0.09729591, 0.21447651, -0.02440158)
+    ee_default_right_pos_b: tuple[float, float, float] = (0.09729591, -0.21446651, -0.02440158)
+    ee_default_left_quat_b_xyzw: tuple[float, float, float, float] = (
+        0.08970304,
+        0.38643646,
+        0.04628095,
+        0.91677604,
+    )
+    ee_default_right_quat_b_xyzw: tuple[float, float, float, float] = (
+        -0.08970304,
+        0.38643646,
+        -0.04628095,
+        0.91677604,
+    )
 
     stick_deadzone: float = 0.08
     trigger_deadzone: float = 0.1

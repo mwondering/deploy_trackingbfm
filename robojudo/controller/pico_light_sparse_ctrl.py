@@ -34,6 +34,11 @@ def _rot6d_from_quat_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
     return rotmat[:, :2].reshape(-1).astype(np.float32)
 
 
+def _apply_relative_quat(default_quat_xyzw: np.ndarray, relative_quat_xyzw: np.ndarray) -> np.ndarray:
+    quat = sRot.from_quat(default_quat_xyzw) * sRot.from_quat(relative_quat_xyzw)
+    return quat.as_quat().astype(np.float32)
+
+
 class _PicoSdkReader:
     def __init__(self):
         try:
@@ -97,27 +102,45 @@ class PicoLightSparseCtrl(Controller):
 
         self._last_output = self._neutral_output(commands=[])
 
+    def _ee_pose_from_delta(
+        self,
+        *,
+        left_delta: np.ndarray | None = None,
+        right_delta: np.ndarray | None = None,
+        left_relative_quat: np.ndarray | None = None,
+        right_relative_quat: np.ndarray | None = None,
+    ) -> np.ndarray:
+        left_delta = np.zeros(3, dtype=np.float32) if left_delta is None else np.asarray(left_delta, dtype=np.float32)
+        right_delta = (
+            np.zeros(3, dtype=np.float32) if right_delta is None else np.asarray(right_delta, dtype=np.float32)
+        )
+        identity_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        left_relative_quat = (
+            identity_quat if left_relative_quat is None else np.asarray(left_relative_quat, dtype=np.float32)
+        )
+        right_relative_quat = (
+            identity_quat if right_relative_quat is None else np.asarray(right_relative_quat, dtype=np.float32)
+        )
+
+        left_default_pos = np.asarray(self.cfg_ctrl.ee_default_left_pos_b, dtype=np.float32)
+        right_default_pos = np.asarray(self.cfg_ctrl.ee_default_right_pos_b, dtype=np.float32)
+        left_default_quat = np.asarray(self.cfg_ctrl.ee_default_left_quat_b_xyzw, dtype=np.float32)
+        right_default_quat = np.asarray(self.cfg_ctrl.ee_default_right_quat_b_xyzw, dtype=np.float32)
+        left_quat = _apply_relative_quat(left_default_quat, left_relative_quat)
+        right_quat = _apply_relative_quat(right_default_quat, right_relative_quat)
+
+        return np.concatenate(
+            [
+                left_default_pos + left_delta,
+                _rot6d_from_quat_xyzw(left_quat),
+                right_default_pos + right_delta,
+                _rot6d_from_quat_xyzw(right_quat),
+            ]
+        ).astype(np.float32)
+
     def _neutral_output(self, *, commands: list[str]) -> dict[str, Any]:
         return {
-            "ee_pose": np.array(
-                [
-                    *self.cfg_ctrl.ee_neutral_left,
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                    *self.cfg_ctrl.ee_neutral_right,
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                ],
-                dtype=np.float32,
-            ),
+            "ee_pose": self._ee_pose_from_delta(),
             "base_lin_vel_b": np.zeros(3, dtype=np.float32),
             "base_ang_vel_b": np.zeros(3, dtype=np.float32),
             "anchor_height_w": np.array([self._base_height], dtype=np.float32),
@@ -212,16 +235,14 @@ class PicoLightSparseCtrl(Controller):
         right_quat_robot = _unity_quat_to_robot_xyzw(frame["right_quat"])
         left_delta = (left_robot - self._anchor_left_robot) * self.cfg_ctrl.ee_scale
         right_delta = (right_robot - self._anchor_right_robot) * self.cfg_ctrl.ee_scale
-        left_rot6d = _rot6d_from_quat_xyzw(_relative_quat_xyzw(self._anchor_left_quat_robot, left_quat_robot))
-        right_rot6d = _rot6d_from_quat_xyzw(_relative_quat_xyzw(self._anchor_right_quat_robot, right_quat_robot))
-        ee_pose = np.concatenate(
-            [
-                np.asarray(self.cfg_ctrl.ee_neutral_left, dtype=np.float32) + left_delta,
-                left_rot6d,
-                np.asarray(self.cfg_ctrl.ee_neutral_right, dtype=np.float32) + right_delta,
-                right_rot6d,
-            ]
-        ).astype(np.float32)
+        left_relative_quat = _relative_quat_xyzw(self._anchor_left_quat_robot, left_quat_robot)
+        right_relative_quat = _relative_quat_xyzw(self._anchor_right_quat_robot, right_quat_robot)
+        ee_pose = self._ee_pose_from_delta(
+            left_delta=left_delta,
+            right_delta=right_delta,
+            left_relative_quat=left_relative_quat,
+            right_relative_quat=right_relative_quat,
+        )
 
         return {
             "ee_pose": ee_pose,
