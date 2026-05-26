@@ -1,5 +1,6 @@
 import logging
 import time
+from collections import defaultdict
 
 import numpy as np
 from box import Box
@@ -90,10 +91,39 @@ class RlPipeline(Pipeline):
 
         self.freq = self.cfg.policy.freq
         self.dt = 1.0 / self.freq
+        self._profile_sums = defaultdict(float)
+        self._profile_count = 0
 
         self.reset()
         self.self_check()
         self.policy.reset()  # reset frame counter after dry-run steps
+
+    def _profile_enabled(self):
+        return bool(getattr(self.cfg.debug, "profile_timing", False))
+
+    def _profile_reset(self):
+        self._profile_sums.clear()
+        self._profile_count = 0
+
+    def _profile_add(self, timings: dict[str, float]):
+        if not self._profile_enabled():
+            return
+        for key, value in timings.items():
+            self._profile_sums[key] += value
+        self._profile_count += 1
+        interval = max(1, int(getattr(self.cfg.debug, "profile_interval", 50)))
+        if self._profile_count < interval:
+            return
+
+        total = sum(self._profile_sums.values())
+        parts = [f"{key}={value / self._profile_count * 1000:.2f}ms" for key, value in self._profile_sums.items()]
+        logger.warning(
+            "Timing profile avg over %d frames: total=%.2fms, %s",
+            self._profile_count,
+            total / self._profile_count * 1000,
+            ", ".join(parts),
+        )
+        self._profile_reset()
 
     def self_check(self):
         self.env.self_check()
@@ -213,17 +243,34 @@ class RlPipeline(Pipeline):
             )
 
     def step(self, dry_run=False):
+        timings = {}
+        t_last = time.perf_counter()
         self.env.update()
+        t_now = time.perf_counter()
+        timings["env_update"] = t_now - t_last
+        t_last = t_now
         env_data = self.env.get_data()
+        t_now = time.perf_counter()
+        timings["env_get_data"] = t_now - t_last
+        t_last = t_now
 
         ctrl_data = self.ctrl_manager.get_ctrl_data(env_data)
+        t_now = time.perf_counter()
+        timings["ctrl"] = t_now - t_last
+        t_last = t_now
 
         commands = ctrl_data.get("COMMANDS", [])
         if len(commands) > 0:
             logger.info(f"{'=' * 10} COMMANDS {'=' * 10}\n{commands}")
 
         obs, extras = self.policy.get_observation(env_data, ctrl_data)
+        t_now = time.perf_counter()
+        timings["policy_obs"] = t_now - t_last
+        t_last = t_now
         pd_target = self.policy.get_pd_target(obs)
+        t_now = time.perf_counter()
+        timings["policy_action"] = t_now - t_last
+        t_last = t_now
 
         # -- Detect motion done --
         callbacks = extras.get("CALLBACK", [])
@@ -244,8 +291,14 @@ class RlPipeline(Pipeline):
 
         if not dry_run:
             self.env.step(pd_target, extras.get("hand_pose", None))
+        t_now = time.perf_counter()
+        timings["env_step"] = t_now - t_last
+        t_last = t_now
 
         self.post_step_callback(env_data, ctrl_data, extras, pd_target)
+        t_now = time.perf_counter()
+        timings["post_step"] = t_now - t_last
+        self._profile_add(timings)
 
         # Handle pending blend-in (after MOTION_RESET / FADE_IN).
         if self._pending_blend_in:
@@ -357,19 +410,39 @@ class RlPipeline(Pipeline):
 
         last_step_time = time.time()
         for t in range(blend_steps):
+            timings = {}
+            t_last = time.perf_counter()
             alpha = t / max(blend_steps - 1, 1)
 
             # Run policy observation + action (frame stays at 0).
             self.env.update()
+            t_now = time.perf_counter()
+            timings["prepare_env_update"] = t_now - t_last
+            t_last = t_now
             env_data = self.env.get_data()
+            t_now = time.perf_counter()
+            timings["prepare_env_get_data"] = t_now - t_last
+            t_last = t_now
             ctrl_data = self.ctrl_manager.get_ctrl_data(env_data)
+            t_now = time.perf_counter()
+            timings["prepare_ctrl"] = t_now - t_last
+            t_last = t_now
             obs, extras = self.policy.get_observation(env_data, ctrl_data)
+            t_now = time.perf_counter()
+            timings["prepare_policy_obs"] = t_now - t_last
+            t_last = t_now
             policy_pd = self.policy.get_pd_target(obs)
+            t_now = time.perf_counter()
+            timings["prepare_policy_action"] = t_now - t_last
+            t_last = t_now
 
             # Blend: default DOF → policy output
             action = (1 - alpha) * desired_motor_angle + alpha * policy_pd
 
             self.env.step(action)
+            t_now = time.perf_counter()
+            timings["prepare_env_step"] = t_now - t_last
+            self._profile_add(timings)
 
             # Do NOT call post_step_callback — frame stays at 0.
 

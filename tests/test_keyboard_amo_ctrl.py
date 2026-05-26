@@ -269,7 +269,7 @@ class TestKeyboardAmoCtrl(unittest.TestCase):
             AMOPolicy.AMO_ORIGINAL_UPPER_BODY_DEFAULT_POS,
         )
 
-    def test_amo_policy_uses_original_vx_only_in_place_logic(self):
+    def test_amo_policy_yaw_command_disables_in_place_stand(self):
         import numpy as np
         import torch
 
@@ -314,7 +314,7 @@ class TestKeyboardAmoCtrl(unittest.TestCase):
         policy._get_commands = lambda _: np.array([0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
         policy.get_observation(EnvData(), {})
-        self.assertTrue(policy._in_place_stand_flag)
+        self.assertFalse(policy._in_place_stand_flag)
 
     def test_g1_amo_config_is_registered(self):
         from robojudo.config import cfg_registry

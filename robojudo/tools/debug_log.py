@@ -17,6 +17,12 @@ class DebugCfg(Config):
     log_obs: bool = False
     """Warning, this is debug only, may generate large log files and slow down the system."""
 
+    profile_timing: bool = False
+    """Print averaged per-stage pipeline timing for performance diagnosis."""
+
+    profile_interval: int = 50
+    """Number of frames to average before printing timing profile."""
+
 
 class DebugLogger:
     """
