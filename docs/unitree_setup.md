@@ -67,6 +67,11 @@ Both `UnitreeEnv` and `UnitreeCppEnv` are supported.
 
 After setup install, connect your robot via Ethernet, then check [network configuration](#network-configuration).
 
+For Pico-controlled development-PC deployment, use the direct DDS path in
+[pico_devpc_dds_deploy.md](pico_devpc_dds_deploy.md). In that setup the development
+PC runs Pico input, policy inference, and `UnitreeCppEnv`; the robot onboard computer
+does not need a custom RoboJuDo receiver script.
+
 ---
 
 ## Network Configuration

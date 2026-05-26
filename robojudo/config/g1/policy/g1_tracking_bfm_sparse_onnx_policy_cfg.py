@@ -1,19 +1,27 @@
+import os
+
 from robojudo.config.g1.env.g1_env_cfg import G1_29DoF
 from robojudo.policy.policy_cfgs import TrackingBfmSparseOnnxPolicyCfg
 from robojudo.tools.tool_cfgs import DoFConfig
 
 
-_DEFAULT_TRACKING_BFM_ONNX = (
-    "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
-    # "0508_1stage_anchor_b/"
-    "0508_distillation_anchor_b/"
-    # "deploy_model_34000.onnx"
-    "deploy_model_29999.onnx"
+_DEFAULT_TRACKING_BFM_ONNX = os.environ.get(
+    "ROBOJUDO_TRACKING_BFM_ONNX",
+    (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        # "0508_1stage_anchor_b/"
+        "0508_distillation_anchor_b/"
+        # "deploy_model_34000.onnx"
+        "deploy_model_29999.onnx"
+    ),
 )
-_DEFAULT_TRACKING_BFM_ENV_YAML = (
-    "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
-    "0508_distillation_anchor_b/params/env.yaml"
-    # "0508_1stage_anchor_b/params/env.yaml"
+_DEFAULT_TRACKING_BFM_ENV_YAML = os.environ.get(
+    "ROBOJUDO_TRACKING_BFM_ENV_YAML",
+    (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        "0508_distillation_anchor_b/params/env.yaml"
+        # "0508_1stage_anchor_b/params/env.yaml"
+    ),
 )
 
 

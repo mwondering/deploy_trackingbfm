@@ -1,3 +1,5 @@
+import os
+
 from robojudo.config import cfg_registry
 from robojudo.controller.ctrl_cfgs import (
     JoystickCtrlCfg,  # noqa: F401
@@ -39,6 +41,8 @@ from .policy.g1_unitree_policy_cfg import G1UnitreePolicyCfg, G1UnitreeWoGaitPol
 Add your custom config here.
 """
 
+_DEV_PC_UNITREE_NET_IF = os.environ.get("ROBOJUDO_UNITREE_NET_IF", "eth0")
+
 
 @cfg_registry.register
 class g1_dev(RlPipelineCfg):
@@ -70,6 +74,27 @@ class g1_tracking_bfm_pico_light_sim(RlPipelineCfg):
 
 
 @cfg_registry.register
+class g1_tracking_bfm_pico_light_real(RlPipelineCfg):
+    """Dev PC Pico -> sparse tracking_bfm ONNX -> real G1 through wired Unitree DDS."""
+
+    robot: str = "g1"
+    env: G1RealEnvCfg = G1RealEnvCfg(
+        env_type="UnitreeCppEnv",
+        unitree=G1UnitreeCfg(
+            net_if=_DEV_PC_UNITREE_NET_IF,
+        ),
+        born_place_align=False,
+    )
+
+    ctrl: list[PicoLightSparseCtrlCfg] = [
+        PicoLightSparseCtrlCfg(),
+    ]
+
+    policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg()
+    do_safety_check: bool = True
+
+
+@cfg_registry.register
 class g1_tracking_bfm_pico_retarget_sim(RlPipelineCfg):
     """Pico full-body retarget -> sparse tracking_bfm ONNX -> G1 MuJoCo."""
 
@@ -86,6 +111,29 @@ class g1_tracking_bfm_pico_retarget_sim(RlPipelineCfg):
     policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg(
         ctrl_type="PicoRetargetTrackingBfmCtrl",
     )
+
+
+@cfg_registry.register
+class g1_tracking_bfm_pico_retarget_real(RlPipelineCfg):
+    """Dev PC Pico full-body retarget -> sparse tracking_bfm ONNX -> real G1 through wired Unitree DDS."""
+
+    robot: str = "g1"
+    env: G1RealEnvCfg = G1RealEnvCfg(
+        env_type="UnitreeCppEnv",
+        unitree=G1UnitreeCfg(
+            net_if=_DEV_PC_UNITREE_NET_IF,
+        ),
+        born_place_align=False,
+    )
+
+    ctrl: list[PicoRetargetTrackingBfmCtrlCfg] = [
+        PicoRetargetTrackingBfmCtrlCfg(),
+    ]
+
+    policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg(
+        ctrl_type="PicoRetargetTrackingBfmCtrl",
+    )
+    do_safety_check: bool = True
 
 
 @cfg_registry.register
