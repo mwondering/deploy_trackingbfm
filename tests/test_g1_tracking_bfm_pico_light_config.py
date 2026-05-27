@@ -22,6 +22,7 @@ def test_g1_tracking_bfm_pico_light_sim_config_is_registered() -> None:
     assert cfg.ctrl[0].retarget_ee_pose is True
     assert isinstance(cfg.policy, G1TrackingBfmSparseOnnxPolicyCfg)
     assert cfg.policy.policy_type == "TrackingBfmSparseOnnxPolicy"
+    assert cfg.debug.log_obs is True
 
 
 def test_g1_tracking_bfm_pico_retarget_sim_config_is_registered() -> None:
@@ -36,6 +37,7 @@ def test_g1_tracking_bfm_pico_retarget_sim_config_is_registered() -> None:
     assert cfg.ctrl[0].anchor_body_name == "pelvis"
     assert cfg.ctrl[0].left_ee_body_name == "left_wrist_yaw_link"
     assert cfg.ctrl[0].right_ee_body_name == "right_wrist_yaw_link"
+    assert cfg.debug.log_obs is True
 
 
 def test_g1_tracking_bfm_pico_light_real_config_is_registered_for_dev_pc_dds() -> None:
@@ -47,12 +49,14 @@ def test_g1_tracking_bfm_pico_light_real_config_is_registered_for_dev_pc_dds() -
     assert cfg.env.unitree.net_if == "eth0"
     assert cfg.env.born_place_align is False
     assert cfg.env.odometry_type == "UNITREE"
+    assert cfg.env.limit_pd_target_effort is False
     assert len(cfg.ctrl) == 1
     assert isinstance(cfg.ctrl[0], PicoLightSparseCtrlCfg)
     assert cfg.ctrl[0].retarget_ee_pose is True
     assert isinstance(cfg.policy, G1TrackingBfmSparseOnnxPolicyCfg)
     assert cfg.policy.ctrl_type == "PicoLightSparseCtrl"
     assert cfg.do_safety_check is True
+    assert cfg.debug.log_obs is True
 
 
 def test_g1_tracking_bfm_pico_retarget_real_config_is_registered_for_dev_pc_dds() -> None:
@@ -63,11 +67,13 @@ def test_g1_tracking_bfm_pico_retarget_real_config_is_registered_for_dev_pc_dds(
     assert cfg.env.env_type == "UnitreeCppEnv"
     assert cfg.env.unitree.net_if == "eth0"
     assert cfg.env.born_place_align is False
+    assert cfg.env.limit_pd_target_effort is False
     assert len(cfg.ctrl) == 1
     assert isinstance(cfg.ctrl[0], PicoRetargetTrackingBfmCtrlCfg)
     assert isinstance(cfg.policy, G1TrackingBfmSparseOnnxPolicyCfg)
     assert cfg.policy.ctrl_type == "PicoRetargetTrackingBfmCtrl"
     assert cfg.do_safety_check is True
+    assert cfg.debug.log_obs is True
 
 
 def test_g1_tracking_bfm_keyboard_sim_config_is_registered() -> None:
@@ -81,6 +87,7 @@ def test_g1_tracking_bfm_keyboard_sim_config_is_registered() -> None:
     assert cfg.policy.ctrl_type == "KeyboardTrackingBfmCtrl"
     assert cfg.policy.onnx_path.endswith(".onnx")
     assert len(cfg.policy.action_scales) == cfg.policy.action_dof.num_dofs
+    assert cfg.debug.log_obs is True
 
 
 def test_g1_tracking_bfm_sparse_policy_uses_knees_bent_default_pose() -> None:

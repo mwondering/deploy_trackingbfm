@@ -14,6 +14,7 @@ from robojudo.pipeline.pipeline_cfgs import (
     RlMultiPolicyPipelineCfg,  # noqa: F401
     RlPipelineCfg,  # noqa: F401
 )
+from robojudo.tools.debug_log import DebugCfg
 
 from .ctrl.g1_beyondmimic_ctrl_cfg import G1BeyondmimicCtrlCfg  # noqa: F401
 from .ctrl.g1_motion_ctrl_cfg import (  # noqa: F401
@@ -61,6 +62,7 @@ class g1_tracking_bfm_pico_light_sim(RlPipelineCfg):
     """Lightweight Pico -> sparse tracking_bfm ONNX -> G1 MuJoCo."""
 
     robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True)
     env: G1MujocoEnvCfg = G1MujocoEnvCfg(
         born_place_align=False,
         random_heading=True,
@@ -78,12 +80,14 @@ class g1_tracking_bfm_pico_light_real(RlPipelineCfg):
     """Dev PC Pico -> sparse tracking_bfm ONNX -> real G1 through wired Unitree DDS."""
 
     robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True)
     env: G1RealEnvCfg = G1RealEnvCfg(
         env_type="UnitreeCppEnv",
         unitree=G1UnitreeCfg(
             net_if=_DEV_PC_UNITREE_NET_IF,
         ),
         born_place_align=False,
+        limit_pd_target_effort=False,
     )
 
     ctrl: list[PicoLightSparseCtrlCfg] = [
@@ -99,6 +103,7 @@ class g1_tracking_bfm_pico_retarget_sim(RlPipelineCfg):
     """Pico full-body retarget -> sparse tracking_bfm ONNX -> G1 MuJoCo."""
 
     robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True)
     env: G1MujocoEnvCfg = G1MujocoEnvCfg(
         born_place_align=False,
         random_heading=True,
@@ -118,12 +123,14 @@ class g1_tracking_bfm_pico_retarget_real(RlPipelineCfg):
     """Dev PC Pico full-body retarget -> sparse tracking_bfm ONNX -> real G1 through wired Unitree DDS."""
 
     robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True)
     env: G1RealEnvCfg = G1RealEnvCfg(
         env_type="UnitreeCppEnv",
         unitree=G1UnitreeCfg(
             net_if=_DEV_PC_UNITREE_NET_IF,
         ),
         born_place_align=False,
+        limit_pd_target_effort=False,
     )
 
     ctrl: list[PicoRetargetTrackingBfmCtrlCfg] = [
@@ -141,6 +148,7 @@ class g1_tracking_bfm_keyboard_sim(RlPipelineCfg):
     """Keyboard-only sparse tracking_bfm ONNX deployment for local MuJoCo testing."""
 
     robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True)
     env: G1MujocoEnvCfg = G1MujocoEnvCfg(
         born_place_align=False,
         random_heading=True,
