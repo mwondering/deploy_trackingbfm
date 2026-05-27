@@ -9,6 +9,30 @@ from scipy.spatial.transform import Rotation as R
 
 DEFAULT_ANCHOR_BODY_NAME = "pelvis"
 DEFAULT_EE_BODY_NAMES = ("left_wrist_yaw_link", "right_wrist_yaw_link")
+DEFAULT_SPARSE_ANCHOR_HEIGHT_W = 0.793
+DEFAULT_SPARSE_EE_POSE = np.array(
+    [
+        0.09729591,
+        0.21447651,
+        -0.02440158,
+        0.6970495,
+        -0.01552924,
+        0.15418813,
+        0.97962284,
+        -0.70024806,
+        0.20024414,
+        0.09729591,
+        -0.21446651,
+        -0.02440158,
+        0.6970495,
+        0.01552924,
+        -0.15418813,
+        0.97962284,
+        -0.70024806,
+        -0.20024414,
+    ],
+    dtype=np.float32,
+)
 
 
 @dataclass(frozen=True)

@@ -67,7 +67,7 @@ class g1_tracking_bfm_pico_light_sim(RlPipelineCfg):
     )
 
     ctrl: list[PicoLightSparseCtrlCfg] = [
-        PicoLightSparseCtrlCfg(),
+        PicoLightSparseCtrlCfg(retarget_ee_pose=True),
     ]
 
     policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg()
@@ -87,7 +87,7 @@ class g1_tracking_bfm_pico_light_real(RlPipelineCfg):
     )
 
     ctrl: list[PicoLightSparseCtrlCfg] = [
-        PicoLightSparseCtrlCfg(),
+        PicoLightSparseCtrlCfg(retarget_ee_pose=True),
     ]
 
     policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg()

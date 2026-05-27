@@ -8,6 +8,12 @@ from scipy.spatial.transform import Rotation as sRot
 
 from robojudo.controller import Controller, ctrl_registry
 from robojudo.controller.ctrl_cfgs import PicoLightSparseCtrlCfg
+from robojudo.controller.pico_retarget_tracking_bfm_ctrl import (
+    _make_real_retarget,
+    _make_real_snapshot_builder,
+    _make_real_streamer,
+)
+from robojudo.tools.tracking_bfm_sparse_command import extract_tracking_bfm_sparse_command
 
 
 def _deadzone(value: float, threshold: float) -> float:
@@ -76,13 +82,127 @@ class _PicoSdkReader:
         }
 
 
+def _controller(controller_data, name: str) -> dict[str, Any]:
+    if not isinstance(controller_data, dict):
+        return {}
+    controller = controller_data.get(name, {})
+    return controller if isinstance(controller, dict) else {}
+
+
+def _button(controller_data, controller_name: str, *button_names: str) -> bool:
+    controller = _controller(controller_data, controller_name)
+    return any(bool(controller.get(name, False)) for name in button_names)
+
+
+def _axis_pair(controller_data, controller_name: str) -> tuple[float, float]:
+    controller = _controller(controller_data, controller_name)
+    for key in ("axis", "joystick", "stick", "thumbstick", "primary2DAxis"):
+        value = controller.get(key)
+        if isinstance(value, (list, tuple, np.ndarray)) and len(value) >= 2:
+            return float(value[0]), float(value[1])
+    x = controller.get("axis_x", controller.get("x", 0.0))
+    y = controller.get("axis_y", controller.get("y", 0.0))
+    return float(x or 0.0), float(y or 0.0)
+
+
+def _analog(controller_data, controller_name: str, *names: str) -> float:
+    controller = _controller(controller_data, controller_name)
+    for name in names:
+        value = controller.get(name)
+        if value is not None:
+            return float(value)
+    return 0.0
+
+
+def _timestamp_ns(controller_data) -> int:
+    if isinstance(controller_data, dict):
+        timestamp = controller_data.get("timestamp")
+        if timestamp is not None:
+            return int(timestamp)
+    return int(time.time() * 1e9)
+
+
+def _retarget_ee_pose(
+    cfg: PicoLightSparseCtrlCfg,
+    retarget,
+    snapshot_builder,
+    smplx_data,
+    timestamp_ns: int,
+) -> np.ndarray:
+    qpos = np.asarray(
+        retarget.retarget(smplx_data, offset_to_ground=cfg.offset_to_ground),
+        dtype=np.float32,
+    ).copy()
+    if qpos.shape[0] >= 3:
+        qpos[2] += float(cfg.root_z_offset)
+
+    snapshot = snapshot_builder.build(qpos, timestamp_ns=timestamp_ns)
+    command = extract_tracking_bfm_sparse_command(
+        snapshot,
+        anchor_body_name=cfg.anchor_body_name,
+        ee_body_names=(cfg.left_ee_body_name, cfg.right_ee_body_name),
+    )
+    return np.asarray(command["ee_pose"], dtype=np.float32).copy()
+
+
+class _RetargetPicoReader:
+    def __init__(self, cfg: PicoLightSparseCtrlCfg, streamer=None, retarget=None, snapshot_builder=None):
+        self.cfg = cfg
+        self.streamer = streamer or _make_real_streamer()
+        self.retarget = retarget or _make_real_retarget(cfg)
+        self.snapshot_builder = snapshot_builder or _make_real_snapshot_builder(cfg)
+
+    def read(self) -> dict[str, Any]:
+        smplx_data, _left_hand_data, _right_hand_data, controller_data, _headset_data = self.streamer.get_current_frame()
+        timestamp_ns = _timestamp_ns(controller_data)
+        retarget_ee_pose = None
+        if smplx_data is not None:
+            retarget_ee_pose = _retarget_ee_pose(
+                self.cfg,
+                self.retarget,
+                self.snapshot_builder,
+                smplx_data,
+                timestamp_ns,
+            )
+
+        return {
+            "timestamp_ns": timestamp_ns,
+            "left_axis": _axis_pair(controller_data, "LeftController"),
+            "right_axis": _axis_pair(controller_data, "RightController"),
+            "left_trigger": _analog(controller_data, "LeftController", "index_trig", "trigger", "trigger_value"),
+            "right_trigger": _analog(controller_data, "RightController", "index_trig", "trigger", "trigger_value"),
+            "left_grip": _analog(controller_data, "LeftController", "grip", "grip_value"),
+            "right_grip": _analog(controller_data, "RightController", "grip", "grip_value"),
+            "left_pos": np.zeros(3, dtype=np.float32),
+            "right_pos": np.zeros(3, dtype=np.float32),
+            "left_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            "right_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            "headset_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            "left_x": _button(controller_data, "LeftController", "key_one", "X", "x"),
+            "right_a": _button(controller_data, "RightController", "key_one", "A", "a"),
+            "left_axis_click": _button(controller_data, "LeftController", "axis_click", "axisClick"),
+            "right_axis_click": _button(controller_data, "RightController", "axis_click", "axisClick"),
+            "_retarget_ee_pose": retarget_ee_pose,
+        }
+
 @ctrl_registry.register
 class PicoLightSparseCtrl(Controller):
     cfg_ctrl: PicoLightSparseCtrlCfg
 
-    def __init__(self, cfg_ctrl: PicoLightSparseCtrlCfg, env=None, device="cpu", sdk_reader=None):
+    def __init__(
+        self,
+        cfg_ctrl: PicoLightSparseCtrlCfg,
+        env=None,
+        device="cpu",
+        sdk_reader=None,
+        ee_pose_source=None,
+    ):
         super().__init__(cfg_ctrl=cfg_ctrl, env=env, device=device)
-        self._sdk_reader = sdk_reader or _PicoSdkReader()
+        if sdk_reader is None and self.cfg_ctrl.retarget_ee_pose and ee_pose_source is None:
+            self._sdk_reader = _RetargetPicoReader(self.cfg_ctrl)
+        else:
+            self._sdk_reader = sdk_reader or _PicoSdkReader()
+        self._ee_pose_source = ee_pose_source
         self.reset()
 
     def reset(self):
@@ -229,20 +349,30 @@ class PicoLightSparseCtrl(Controller):
             )
         )
 
-        left_robot = _unity_pos_to_robot(frame["left_pos"])
-        right_robot = _unity_pos_to_robot(frame["right_pos"])
-        left_quat_robot = _unity_quat_to_robot_xyzw(frame["left_quat"])
-        right_quat_robot = _unity_quat_to_robot_xyzw(frame["right_quat"])
-        left_delta = (left_robot - self._anchor_left_robot) * self.cfg_ctrl.ee_scale
-        right_delta = (right_robot - self._anchor_right_robot) * self.cfg_ctrl.ee_scale
-        left_relative_quat = _relative_quat_xyzw(self._anchor_left_quat_robot, left_quat_robot)
-        right_relative_quat = _relative_quat_xyzw(self._anchor_right_quat_robot, right_quat_robot)
-        ee_pose = self._ee_pose_from_delta(
-            left_delta=left_delta,
-            right_delta=right_delta,
-            left_relative_quat=left_relative_quat,
-            right_relative_quat=right_relative_quat,
-        )
+        retarget_ee_pose = frame.get("_retarget_ee_pose")
+        if retarget_ee_pose is not None:
+            ee_pose = np.asarray(retarget_ee_pose, dtype=np.float32).copy()
+        elif self._ee_pose_source is not None:
+            ee_pose = self._ee_pose_source.get_ee_pose(int(frame["timestamp_ns"]))
+            if ee_pose is None:
+                ee_pose = np.asarray(self._last_output["ee_pose"], dtype=np.float32).copy()
+        elif self.cfg_ctrl.retarget_ee_pose:
+            ee_pose = np.asarray(self._last_output["ee_pose"], dtype=np.float32).copy()
+        else:
+            left_robot = _unity_pos_to_robot(frame["left_pos"])
+            right_robot = _unity_pos_to_robot(frame["right_pos"])
+            left_quat_robot = _unity_quat_to_robot_xyzw(frame["left_quat"])
+            right_quat_robot = _unity_quat_to_robot_xyzw(frame["right_quat"])
+            left_delta = (left_robot - self._anchor_left_robot) * self.cfg_ctrl.ee_scale
+            right_delta = (right_robot - self._anchor_right_robot) * self.cfg_ctrl.ee_scale
+            left_relative_quat = _relative_quat_xyzw(self._anchor_left_quat_robot, left_quat_robot)
+            right_relative_quat = _relative_quat_xyzw(self._anchor_right_quat_robot, right_quat_robot)
+            ee_pose = self._ee_pose_from_delta(
+                left_delta=left_delta,
+                right_delta=right_delta,
+                left_relative_quat=left_relative_quat,
+                right_relative_quat=right_relative_quat,
+            )
 
         return {
             "ee_pose": ee_pose,

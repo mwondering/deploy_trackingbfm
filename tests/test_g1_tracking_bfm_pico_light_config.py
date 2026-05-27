@@ -19,6 +19,7 @@ def test_g1_tracking_bfm_pico_light_sim_config_is_registered() -> None:
     assert isinstance(cfg.env, G1MujocoEnvCfg)
     assert len(cfg.ctrl) == 1
     assert isinstance(cfg.ctrl[0], PicoLightSparseCtrlCfg)
+    assert cfg.ctrl[0].retarget_ee_pose is True
     assert isinstance(cfg.policy, G1TrackingBfmSparseOnnxPolicyCfg)
     assert cfg.policy.policy_type == "TrackingBfmSparseOnnxPolicy"
 
@@ -48,6 +49,7 @@ def test_g1_tracking_bfm_pico_light_real_config_is_registered_for_dev_pc_dds() -
     assert cfg.env.odometry_type == "UNITREE"
     assert len(cfg.ctrl) == 1
     assert isinstance(cfg.ctrl[0], PicoLightSparseCtrlCfg)
+    assert cfg.ctrl[0].retarget_ee_pose is True
     assert isinstance(cfg.policy, G1TrackingBfmSparseOnnxPolicyCfg)
     assert cfg.policy.ctrl_type == "PicoLightSparseCtrl"
     assert cfg.do_safety_check is True

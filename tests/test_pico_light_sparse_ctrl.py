@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from robojudo.controller.ctrl_cfgs import PicoLightSparseCtrlCfg
-from robojudo.controller.pico_light_sparse_ctrl import PicoLightSparseCtrl
+from robojudo.controller.pico_light_sparse_ctrl import PicoLightSparseCtrl, _RetargetPicoReader
 
 _DEFAULT_LEFT_EE_POSE = np.array(
     [
@@ -46,6 +47,53 @@ class _FakeReader:
         if self._frames:
             self._last = self._frames.pop(0)
         return self._last
+
+
+class _FakeEePoseSource:
+    def __init__(self, ee_poses: list[np.ndarray | None]):
+        self._ee_poses = list(ee_poses)
+        self.calls: list[int] = []
+
+    def get_ee_pose(self, timestamp_ns: int) -> np.ndarray | None:
+        self.calls.append(timestamp_ns)
+        if self._ee_poses:
+            return self._ee_poses.pop(0)
+        return None
+
+
+class _FakeRetargetReader:
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def read(self) -> dict:
+        return _frame(timestamp_ns=0)
+
+
+class _FakeRetargetStreamer:
+    def get_current_frame(self):
+        return (
+            None,
+            None,
+            None,
+            {
+                "LeftController": {
+                    "index_trig": 0.7,
+                    "grip": 0.2,
+                    "axis": (0.3, -0.4),
+                    "key_one": True,
+                    "axis_click": False,
+                },
+                "RightController": {
+                    "index_trig": 0.1,
+                    "grip": 0.9,
+                    "axis": (-0.5, 0.6),
+                    "key_one": False,
+                    "axis_click": True,
+                },
+                "timestamp": 123_456_789,
+            },
+            None,
+        )
 
 
 def _frame(
@@ -145,6 +193,88 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         np.testing.assert_allclose(data["ee_pose"][3:9], _DEFAULT_LEFT_EE_POSE[3:9], atol=1e-6)
         np.testing.assert_allclose(data["ee_pose"][9:12], _DEFAULT_RIGHT_EE_POSE[:3] + [0.08, 0.0, 0.16], atol=1e-6)
         np.testing.assert_allclose(data["ee_pose"][12:18], _DEFAULT_RIGHT_EE_POSE[3:9], atol=1e-6)
+
+    def test_retarget_ee_pose_source_overrides_light_controller_delta_mapping(self):
+        retarget_ee_pose = np.linspace(-0.4, 0.4, 18, dtype=np.float32)
+        cfg = PicoLightSparseCtrlCfg(vx_scale=1.0, vy_scale=0.5, retarget_ee_pose=True)
+        reader = _FakeReader(
+            [
+                _frame(timestamp_ns=0, right_a=True),
+                _frame(
+                    timestamp_ns=100_000_000,
+                    left_axis=(0.5, 1.0),
+                    left_pos=(0.0, 0.1, -0.2),
+                    right_pos=(0.0, 0.2, -0.1),
+                ),
+            ]
+        )
+        ee_pose_source = _FakeEePoseSource([retarget_ee_pose, retarget_ee_pose])
+        ctrl = PicoLightSparseCtrl(cfg_ctrl=cfg, sdk_reader=reader, ee_pose_source=ee_pose_source)
+
+        ctrl.get_data()  # enter active and latch anchors
+        data = ctrl.get_data()
+
+        np.testing.assert_allclose(data["base_lin_vel_b"], [1.0, -0.25, 0.0], atol=1e-6)
+        np.testing.assert_allclose(data["ee_pose"], retarget_ee_pose, atol=1e-6)
+        self.assertEqual(ee_pose_source.calls, [0, 100_000_000])
+
+    def test_retarget_ee_pose_frame_overrides_light_controller_delta_mapping(self):
+        retarget_ee_pose = np.linspace(0.4, -0.4, 18, dtype=np.float32)
+        cfg = PicoLightSparseCtrlCfg(vx_scale=1.0, vy_scale=0.5, retarget_ee_pose=True)
+        active_frame = _frame(
+            timestamp_ns=100_000_000,
+            left_axis=(0.5, 1.0),
+            left_pos=(0.0, 0.1, -0.2),
+            right_pos=(0.0, 0.2, -0.1),
+        )
+        active_frame["_retarget_ee_pose"] = retarget_ee_pose
+        reader = _FakeReader(
+            [
+                _frame(timestamp_ns=0, right_a=True),
+                active_frame,
+            ]
+        )
+        ctrl = PicoLightSparseCtrl(cfg_ctrl=cfg, sdk_reader=reader)
+
+        ctrl.get_data()  # enter active and latch anchors
+        data = ctrl.get_data()
+
+        np.testing.assert_allclose(data["base_lin_vel_b"], [1.0, -0.25, 0.0], atol=1e-6)
+        np.testing.assert_allclose(data["ee_pose"], retarget_ee_pose, atol=1e-6)
+
+    def test_retarget_ee_pose_mode_uses_single_retarget_reader_instead_of_pico_sdk_reader(self):
+        cfg = PicoLightSparseCtrlCfg(retarget_ee_pose=True)
+        with (
+            patch("robojudo.controller.pico_light_sparse_ctrl._PicoSdkReader") as sdk_reader_cls,
+            patch("robojudo.controller.pico_light_sparse_ctrl._RetargetPicoReader", _FakeRetargetReader),
+        ):
+            sdk_reader_cls.side_effect = AssertionError("_PicoSdkReader must not be initialized")
+            ctrl = PicoLightSparseCtrl(cfg_ctrl=cfg)
+
+        self.assertIsInstance(ctrl._sdk_reader, _FakeRetargetReader)
+
+    def test_retarget_pico_reader_uses_xrobot_controller_fields_and_timestamp(self):
+        cfg = PicoLightSparseCtrlCfg(retarget_ee_pose=True)
+        reader = _RetargetPicoReader(
+            cfg,
+            streamer=_FakeRetargetStreamer(),
+            retarget=object(),
+            snapshot_builder=object(),
+        )
+
+        frame = reader.read()
+
+        self.assertEqual(frame["timestamp_ns"], 123_456_789)
+        self.assertEqual(frame["left_axis"], (0.3, -0.4))
+        self.assertEqual(frame["right_axis"], (-0.5, 0.6))
+        self.assertEqual(frame["left_trigger"], 0.7)
+        self.assertEqual(frame["left_grip"], 0.2)
+        self.assertEqual(frame["right_trigger"], 0.1)
+        self.assertEqual(frame["right_grip"], 0.9)
+        self.assertTrue(frame["left_x"])
+        self.assertFalse(frame["right_a"])
+        self.assertFalse(frame["left_axis_click"])
+        self.assertTrue(frame["right_axis_click"])
 
     def test_idle_and_active_no_move_use_training_default_wrist_pose(self):
         cfg = PicoLightSparseCtrlCfg()

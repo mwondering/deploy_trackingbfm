@@ -6,7 +6,11 @@ import numpy as np
 
 from robojudo.controller.ctrl_cfgs import PicoRetargetTrackingBfmCtrlCfg
 from robojudo.controller.pico_retarget_tracking_bfm_ctrl import PicoRetargetTrackingBfmCtrl
-from robojudo.tools.tracking_bfm_sparse_command import RetargetMotionSnapshot
+from robojudo.tools.tracking_bfm_sparse_command import (
+    DEFAULT_SPARSE_ANCHOR_HEIGHT_W,
+    DEFAULT_SPARSE_EE_POSE,
+    RetargetMotionSnapshot,
+)
 
 
 class _FakeStreamer:
@@ -79,6 +83,7 @@ def _frame(*, qpos: list[float], right_a=False, left_x=False, timestamp_ns=1) ->
     controller_data = {
         "RightController": {"key_one": right_a},
         "LeftController": {"key_one": left_x},
+        "timestamp": timestamp_ns,
     }
     return smplx_data, None, None, controller_data, None
 
@@ -111,6 +116,22 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         np.testing.assert_allclose(second["base_lin_vel_b"], [0.3, 0.0, 0.0], atol=1e-6)
         np.testing.assert_allclose(second["base_ang_vel_b"], [0.0, 0.0, 0.4], atol=1e-6)
         np.testing.assert_allclose(second["anchor_height_w"], [1.0], atol=1e-6)
+        self.assertIsInstance(builder.calls[1][1], int)
+
+    def test_idle_output_uses_sparse_training_default_pose(self):
+        streamer = _FakeStreamer([_frame(qpos=[0.0], right_a=False)])
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeSnapshotBuilder(),
+        )
+
+        data = ctrl.get_data()
+
+        self.assertEqual(data["state"], "idle")
+        np.testing.assert_allclose(data["ee_pose"], DEFAULT_SPARSE_EE_POSE, atol=1e-6)
+        np.testing.assert_allclose(data["anchor_height_w"], [DEFAULT_SPARSE_ANCHOR_HEIGHT_W], atol=1e-6)
 
     def test_pause_freezes_last_sparse_command(self):
         streamer = _FakeStreamer(

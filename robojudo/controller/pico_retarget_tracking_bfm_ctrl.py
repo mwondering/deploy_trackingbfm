@@ -8,6 +8,8 @@ import numpy as np
 from robojudo.controller import Controller, ctrl_registry
 from robojudo.controller.ctrl_cfgs import PicoRetargetTrackingBfmCtrlCfg
 from robojudo.tools.tracking_bfm_sparse_command import (
+    DEFAULT_SPARSE_ANCHOR_HEIGHT_W,
+    DEFAULT_SPARSE_EE_POSE,
     MujocoRetargetSnapshotBuilder,
     extract_tracking_bfm_sparse_command,
 )
@@ -85,32 +87,10 @@ class PicoRetargetTrackingBfmCtrl(Controller):
 
     def _neutral_output(self, commands: list[str]) -> dict[str, Any]:
         return {
-            "ee_pose": np.array(
-                [
-                    0.2,
-                    0.2,
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.2,
-                    -0.2,
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                ],
-                dtype=np.float32,
-            ),
+            "ee_pose": DEFAULT_SPARSE_EE_POSE.copy(),
             "base_lin_vel_b": np.zeros(3, dtype=np.float32),
             "base_ang_vel_b": np.zeros(3, dtype=np.float32),
-            "anchor_height_w": np.array([0.75], dtype=np.float32),
+            "anchor_height_w": np.array([DEFAULT_SPARSE_ANCHOR_HEIGHT_W], dtype=np.float32),
             "state": self.state,
             "timestamp_ns": int(time.time() * 1e9),
             "_commands": list(commands),

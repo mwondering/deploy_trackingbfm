@@ -50,7 +50,7 @@ class KeyboardTrackingBfmCtrlCfg(CtrlCfg):
     vy_scale: float = 0.5
     wz_scale: float = 1.0
 
-    base_height_init: float = 0.75
+    base_height_init: float = 0.793
     base_height_min: float = 0.35
     base_height_max: float = 0.85
     base_height_step: float = 0.02
@@ -231,11 +231,11 @@ class PicoLightSparseCtrlCfg(CtrlCfg):
     ctrl_type: str = "PicoLightSparseCtrl"
 
     vx_scale: float = 1.0
-    vy_scale: float = 0.5
+    vy_scale: float = 1.0
     wz_scale: float = 1.0
 
-    base_height_init: float = 0.75
-    base_height_min: float = 0.35
+    base_height_init: float = 0.793
+    base_height_min: float = 0.15
     base_height_max: float = 0.85
     base_height_rate: float = 0.3
 
@@ -254,6 +254,14 @@ class PicoLightSparseCtrlCfg(CtrlCfg):
         -0.04628095,
         0.91677604,
     )
+    retarget_ee_pose: bool = False
+    robot: str = "unitree_g1"
+    actual_human_height: float = 1.6
+    offset_to_ground: bool = True
+    root_z_offset: float = 0.0
+    anchor_body_name: str = "pelvis"
+    left_ee_body_name: str = "left_wrist_yaw_link"
+    right_ee_body_name: str = "right_wrist_yaw_link"
 
     stick_deadzone: float = 0.08
     trigger_deadzone: float = 0.1
