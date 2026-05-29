@@ -8,18 +8,14 @@ _DEFAULT_TRACKING_BFM_ONNX = os.environ.get(
     "ROBOJUDO_TRACKING_BFM_ONNX",
     (
         "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
-        # "0508_1stage_anchor_b/"
-        "0508_distillation_anchor_b/"
-        # "deploy_model_34000.onnx"
-        "deploy_model_29999.onnx"
+        "0529_ckpt/latent_tracking_encoder/deploy_model_4000.onnx"
     ),
 )
 _DEFAULT_TRACKING_BFM_ENV_YAML = os.environ.get(
     "ROBOJUDO_TRACKING_BFM_ENV_YAML",
     (
         "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
-        "0508_distillation_anchor_b/params/env.yaml"
-        # "0508_1stage_anchor_b/params/env.yaml"
+        "0529_ckpt/latent_tracking_encoder/params/env.yaml"
     ),
 )
 
@@ -74,6 +70,7 @@ class G1TrackingBfmSparseOnnxPolicyCfg(TrackingBfmSparseOnnxPolicyCfg):
     robot: str = "g1"
     onnx_path: str = _DEFAULT_TRACKING_BFM_ONNX
     env_yaml_path: str | None = _DEFAULT_TRACKING_BFM_ENV_YAML
+    proprio_obs_group: str | None = "proprio_actor"
     action_scales: list[float] = [
         *[
             0.5475464629911068,

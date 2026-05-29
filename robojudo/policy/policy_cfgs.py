@@ -60,9 +60,11 @@ class TrackingBfmSparseOnnxPolicyCfg(PolicyCfg):
 
     onnx_path: str
     obs_group: str | None = None
+    proprio_obs_group: str | None = None
     ctrl_type: str = "PicoLightSparseCtrl"
     env_yaml_path: str | None = None
     expected_obs_dim: int | None = None
+    expected_proprio_dim: int | None = None
     action_scales: list[float] | None = None
 
     @property

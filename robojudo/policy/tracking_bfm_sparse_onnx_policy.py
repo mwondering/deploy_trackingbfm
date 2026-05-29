@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import deque
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,6 @@ from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 from robojudo.policy import Policy, policy_registry
 from robojudo.utils.util_func import get_gravity_orientation
-
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +80,25 @@ class TrackingBfmSparseOnnxPolicy(Policy):
         )
         inputs = self.session.get_inputs()
         outputs = self.session.get_outputs()
-        if len(inputs) != 1:
-            raise ValueError(f"Expected exactly one ONNX input, got {len(inputs)}.")
+        if len(inputs) not in (1, 2):
+            raise ValueError(f"Expected one or two ONNX inputs, got {len(inputs)}.")
         if len(outputs) != 1:
             raise ValueError(f"Expected exactly one ONNX output, got {len(outputs)}.")
 
-        self.input_name = inputs[0].name
+        input_by_name = {input_info.name: input_info for input_info in inputs}
+        obs_input = input_by_name.get("obs", inputs[0])
+        self.input_name = obs_input.name
+        self.proprio_input_name = None
+        proprio_input = None
+        if len(inputs) == 2:
+            proprio_input = input_by_name.get("proprio")
+            if proprio_input is None:
+                proprio_input = next(input_info for input_info in inputs if input_info.name != self.input_name)
+            self.proprio_input_name = proprio_input.name
+
         self.output_name = outputs[0].name
-        self.obs_dim = _infer_static_feature_dim(inputs[0].shape)
+        self.obs_dim = _infer_static_feature_dim(obs_input.shape)
+        self.proprio_dim = _infer_static_feature_dim(proprio_input.shape) if proprio_input is not None else None
         self.action_dim = _infer_static_feature_dim(outputs[0].shape)
 
         expected_obs_dim = getattr(cfg_policy, "expected_obs_dim", None)
@@ -95,6 +106,12 @@ class TrackingBfmSparseOnnxPolicy(Policy):
             raise ValueError(
                 f"observation dimension mismatch: config expects {expected_obs_dim}, "
                 f"ONNX provides {self.obs_dim}"
+            )
+        expected_proprio_dim = getattr(cfg_policy, "expected_proprio_dim", None)
+        if expected_proprio_dim is not None and expected_proprio_dim != self.proprio_dim:
+            raise ValueError(
+                f"proprio observation dimension mismatch: config expects {expected_proprio_dim}, "
+                f"ONNX provides {self.proprio_dim}"
             )
         if self.cfg_action_dof.num_dofs != self.action_dim:
             raise ValueError(
@@ -104,6 +121,7 @@ class TrackingBfmSparseOnnxPolicy(Policy):
 
         model_meta = self.session.get_modelmeta().custom_metadata_map
         self.obs_group = cfg_policy.obs_group or model_meta.get("obs_group", "actor")
+        self.proprio_obs_group = cfg_policy.proprio_obs_group or model_meta.get("proprio_obs_group")
         self.ctrl_type = cfg_policy.ctrl_type
         self._action_scales = None
         if cfg_policy.action_scales is not None:
@@ -116,6 +134,55 @@ class TrackingBfmSparseOnnxPolicy(Policy):
         self._load_obs_contract(Path(cfg_policy.policy_file), cfg_policy.env_yaml_path)
         self.reset()
 
+    def _build_obs_contract(
+        self,
+        env_cfg: dict[str, Any],
+        yaml_path: Path,
+        group_name: str,
+        *,
+        require_command_terms: bool,
+    ) -> dict[str, Any]:
+        try:
+            group_cfg = env_cfg["observations"][group_name]
+            terms_cfg = group_cfg["terms"]
+        except KeyError as exc:
+            raise KeyError(f"Observation group '{group_name}' not found in {yaml_path}") from exc
+
+        term_order = list(terms_cfg.keys())
+        command_terms = [name for name in term_order if name in _COMMAND_TERM_NAMES]
+        robot_terms = [name for name in term_order if name in _ROBOT_TERM_NAMES]
+        if require_command_terms and not command_terms:
+            raise ValueError(f"No sparse command terms found in observation group '{group_name}'.")
+        if not robot_terms:
+            raise ValueError(f"No robot state terms found in observation group '{group_name}'.")
+
+        if command_terms:
+            command_ref = terms_cfg[command_terms[0]].get("params", {})
+            command_history_steps = int(command_ref.get("history_steps", 0))
+            command_future_steps = int(command_ref.get("future_steps", 1))
+        else:
+            command_history_steps = 0
+            command_future_steps = 0
+        command_history_length = max(1, command_history_steps + 1)
+
+        robot_ref = terms_cfg[robot_terms[0]]
+        raw_robot_history_length = int(robot_ref.get("history_length", 0) or 0)
+        robot_history_length = max(1, raw_robot_history_length)
+
+        return {
+            "group_name": group_name,
+            "term_order": term_order,
+            "command_terms": command_terms,
+            "robot_terms": robot_terms,
+            "command_history_steps": command_history_steps,
+            "command_future_steps": command_future_steps,
+            "command_history_length": command_history_length,
+            "command_total_length": command_history_steps + command_future_steps,
+            "robot_history_length": robot_history_length,
+            "command_buffer": deque(maxlen=command_history_length),
+            "robot_buffers": {term_name: deque(maxlen=robot_history_length) for term_name in robot_terms},
+        }
+
     def _load_obs_contract(self, onnx_path: Path, env_yaml_path: str | None) -> None:
         yaml_path = Path(env_yaml_path) if env_yaml_path is not None else onnx_path.parent / "params" / "env.yaml"
         if not yaml_path.is_file():
@@ -125,40 +192,45 @@ class TrackingBfmSparseOnnxPolicy(Policy):
             )
 
         env_cfg = _load_yaml_relaxed(yaml_path)
-        try:
-            group_cfg = env_cfg["observations"][self.obs_group]
-            terms_cfg = group_cfg["terms"]
-        except KeyError as exc:
-            raise KeyError(f"Observation group '{self.obs_group}' not found in {yaml_path}") from exc
+        self._obs_contract = self._build_obs_contract(
+            env_cfg,
+            yaml_path,
+            self.obs_group,
+            require_command_terms=True,
+        )
+        self._proprio_contract = None
+        if self.proprio_input_name is not None:
+            if self.proprio_obs_group is None:
+                raise ValueError(
+                    "ONNX model has a proprio input but no proprio observation group. "
+                    "Set proprio_obs_group or export metadata 'proprio_obs_group'."
+                )
+            self._proprio_contract = self._build_obs_contract(
+                env_cfg,
+                yaml_path,
+                self.proprio_obs_group,
+                require_command_terms=False,
+            )
 
-        self.term_order = list(terms_cfg.keys())
-        self.command_terms = [name for name in self.term_order if name in _COMMAND_TERM_NAMES]
-        self.robot_terms = [name for name in self.term_order if name in _ROBOT_TERM_NAMES]
-        if not self.command_terms:
-            raise ValueError(f"No sparse command terms found in observation group '{self.obs_group}'.")
-        if not self.robot_terms:
-            raise ValueError(f"No robot state terms found in observation group '{self.obs_group}'.")
-
-        command_ref = terms_cfg[self.command_terms[0]].get("params", {})
-        self.command_history_steps = int(command_ref.get("history_steps", 0))
-        self.command_future_steps = int(command_ref.get("future_steps", 1))
-        self.command_history_length = max(1, self.command_history_steps + 1)
-        self.command_total_length = self.command_history_steps + self.command_future_steps
-
-        robot_ref = terms_cfg[self.robot_terms[0]]
-        raw_robot_history_length = int(robot_ref.get("history_length", 0) or 0)
-        self.robot_history_length = max(1, raw_robot_history_length)
-
-        self._command_buffer = deque(maxlen=self.command_history_length)
-        self._robot_buffers = {
-            term_name: deque(maxlen=self.robot_history_length) for term_name in self.robot_terms
-        }
+        self.term_order = self._obs_contract["term_order"]
+        self.command_terms = self._obs_contract["command_terms"]
+        self.robot_terms = self._obs_contract["robot_terms"]
+        self.command_history_steps = self._obs_contract["command_history_steps"]
+        self.command_future_steps = self._obs_contract["command_future_steps"]
+        self.command_history_length = self._obs_contract["command_history_length"]
+        self.command_total_length = self._obs_contract["command_total_length"]
+        self.robot_history_length = self._obs_contract["robot_history_length"]
+        self._command_buffer = self._obs_contract["command_buffer"]
+        self._robot_buffers = self._obs_contract["robot_buffers"]
 
     def reset(self):
         self.last_action = np.zeros(self.action_dim, dtype=np.float32)
-        self._command_buffer.clear()
-        for history in self._robot_buffers.values():
-            history.clear()
+        for contract in (self._obs_contract, self._proprio_contract):
+            if contract is None:
+                continue
+            contract["command_buffer"].clear()
+            for history in contract["robot_buffers"].values():
+                history.clear()
 
     def post_step_callback(self, commands: list[str] | None = None):
         del commands
@@ -178,45 +250,55 @@ class TrackingBfmSparseOnnxPolicy(Policy):
         return {
             "projected_gravity": np.asarray(get_gravity_orientation(env_data.base_quat), dtype=np.float32).reshape(-1),
             "base_ang_vel": np.asarray(env_data.base_ang_vel, dtype=np.float32).reshape(-1),
-            "joint_pos": (np.asarray(env_data.dof_pos, dtype=np.float32) - self.default_dof_pos.astype(np.float32)).reshape(-1),
+            "joint_pos": (
+                np.asarray(env_data.dof_pos, dtype=np.float32) - self.default_dof_pos.astype(np.float32)
+            ).reshape(-1),
             "joint_vel": np.asarray(env_data.dof_vel, dtype=np.float32).reshape(-1),
             "actions": self.last_action.astype(np.float32).reshape(-1),
         }
 
-    def _command_sequence(self, ctrl: dict[str, Any]) -> dict[str, np.ndarray]:
+    def _command_sequence(self, ctrl: dict[str, Any], contract: dict[str, Any]) -> dict[str, np.ndarray]:
         current = {
-            term_name: np.asarray(ctrl[term_name], dtype=np.float32).reshape(-1) for term_name in self.command_terms
+            term_name: np.asarray(ctrl[term_name], dtype=np.float32).reshape(-1)
+            for term_name in contract["command_terms"]
         }
-        self._command_buffer.append(current)
-        history = list(self._command_buffer)
-        while len(history) < self.command_history_length:
+        if not current:
+            return {}
+        contract["command_buffer"].append(current)
+        history = list(contract["command_buffer"])
+        while len(history) < contract["command_history_length"]:
             history.insert(0, history[0].copy())
 
         sequence = {}
-        for term_name in self.command_terms:
-            pieces = [step[term_name] for step in history[-self.command_history_length :]]
-            if self.command_future_steps > 1:
-                pieces.extend([current[term_name]] * (self.command_future_steps - 1))
+        for term_name in contract["command_terms"]:
+            pieces = [step[term_name] for step in history[-contract["command_history_length"] :]]
+            if contract["command_future_steps"] > 1:
+                pieces.extend([current[term_name]] * (contract["command_future_steps"] - 1))
             sequence[term_name] = np.concatenate(pieces, dtype=np.float32)
         return sequence
 
-    def get_observation(self, env_data, ctrl_data) -> tuple[np.ndarray, dict]:
-        if self.ctrl_type not in ctrl_data:
-            raise KeyError(f"Controller data '{self.ctrl_type}' not found in ctrl_data.")
-        ctrl = ctrl_data[self.ctrl_type]
-        command_terms = self._command_sequence(ctrl)
-        robot_current = self._current_robot_terms(env_data)
-
+    def _assemble_observation(
+        self,
+        contract: dict[str, Any],
+        robot_current: dict[str, np.ndarray],
+        ctrl: dict[str, Any],
+        expected_dim: int,
+    ) -> np.ndarray:
+        command_terms = self._command_sequence(ctrl, contract)
         robot_terms = {
             term_name: np.concatenate(
-                self._push_history(self._robot_buffers[term_name], robot_current[term_name], self.robot_history_length),
+                self._push_history(
+                    contract["robot_buffers"][term_name],
+                    robot_current[term_name],
+                    contract["robot_history_length"],
+                ),
                 dtype=np.float32,
             )
-            for term_name in self.robot_terms
+            for term_name in contract["robot_terms"]
         }
 
         obs_parts = []
-        for term_name in self.term_order:
+        for term_name in contract["term_order"]:
             if term_name in command_terms:
                 obs_parts.append(command_terms[term_name])
             elif term_name in robot_terms:
@@ -225,19 +307,52 @@ class TrackingBfmSparseOnnxPolicy(Policy):
                 raise KeyError(f"Unsupported observation term '{term_name}' in sparse actor contract.")
 
         obs = np.concatenate(obs_parts, dtype=np.float32)
-        if obs.shape[0] != self.obs_dim:
+        if obs.shape[0] != expected_dim:
             raise ValueError(
-                f"assembled observation dimension mismatch: expected {self.obs_dim}, got {obs.shape[0]}"
+                f"assembled observation dimension mismatch for group '{contract['group_name']}': "
+                f"expected {expected_dim}, got {obs.shape[0]}"
             )
-        return obs, {}
+        return obs
 
-    def get_action(self, obs: np.ndarray) -> np.ndarray:
+    def get_observation(self, env_data, ctrl_data) -> tuple[np.ndarray | dict[str, np.ndarray], dict]:
+        if self.ctrl_type not in ctrl_data:
+            raise KeyError(f"Controller data '{self.ctrl_type}' not found in ctrl_data.")
+        ctrl = ctrl_data[self.ctrl_type]
+        robot_current = self._current_robot_terms(env_data)
+        obs = self._assemble_observation(self._obs_contract, robot_current, ctrl, self.obs_dim)
+        if self._proprio_contract is None:
+            return obs, {}
+
+        proprio = self._assemble_observation(
+            self._proprio_contract,
+            robot_current,
+            ctrl,
+            self.proprio_dim,
+        )
+        return {"obs": obs, "proprio": proprio}, {}
+
+    def _reshape_obs(self, obs: np.ndarray, expected_dim: int, label: str) -> np.ndarray:
         obs = np.asarray(obs, dtype=np.float32).reshape(1, -1)
-        if obs.shape[1] != self.obs_dim:
-            raise ValueError(
-                f"observation dimension mismatch: expected {self.obs_dim}, got {obs.shape[1]}"
-            )
-        [action] = self.session.run([self.output_name], {self.input_name: obs})
+        if obs.shape[1] != expected_dim:
+            raise ValueError(f"{label} dimension mismatch: expected {expected_dim}, got {obs.shape[1]}")
+        return obs
+
+    def get_action(self, obs: np.ndarray | Mapping[str, np.ndarray]) -> np.ndarray:
+        if self.proprio_input_name is None:
+            if isinstance(obs, Mapping):
+                obs = obs["obs"]
+            obs = self._reshape_obs(obs, self.obs_dim, "observation")
+            feeds = {self.input_name: obs}
+        else:
+            if not isinstance(obs, Mapping):
+                raise TypeError("Latent tracking ONNX expects observation mapping with 'obs' and 'proprio'.")
+            obs_array = self._reshape_obs(obs["obs"], self.obs_dim, "observation")
+            proprio_array = self._reshape_obs(obs["proprio"], self.proprio_dim, "proprio observation")
+            feeds = {
+                self.input_name: obs_array,
+                self.proprio_input_name: proprio_array,
+            }
+        [action] = self.session.run([self.output_name], feeds)
         action = np.asarray(action, dtype=np.float32).reshape(-1)
         action = (1 - self.action_beta) * self.last_action + self.action_beta * action
         self.last_action = action.copy()
