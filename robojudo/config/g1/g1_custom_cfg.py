@@ -25,6 +25,7 @@ from .ctrl.g1_motion_ctrl_cfg import (  # noqa: F401
 )
 from .ctrl.g1_twist_redis_ctrl_cfg import G1TwistRedisCtrlCfg  # noqa: F401
 from .env.g1_dummy_env_cfg import G1DummyEnvCfg  # noqa: F401
+from .env.g1_env_cfg import G1_29DoF  # noqa: F401
 from .env.g1_mujuco_env_cfg import G1_12MujocoEnvCfg, G1_23MujocoEnvCfg, G1MujocoEnvCfg  # noqa: F401
 from .env.g1_real_env_cfg import G1RealEnvCfg, G1UnitreeCfg  # noqa: F401
 from .policy.g1_amo_policy_cfg import G1AmoPolicyCfg  # noqa: F401
@@ -33,7 +34,11 @@ from .policy.g1_beyondmimic_policy_cfg import G1BeyondMimicPolicyCfg  # noqa: F4
 from .policy.g1_h2h_policy_cfg import G1H2HPolicyCfg  # noqa: F401
 from .policy.g1_kungfubot_policy_cfg import G1KungfuBotGeneralPolicyCfg, G1KungfuBotPolicyCfg  # noqa: F401
 from .policy.g1_smooth_policy_cfg import G1SmoothPolicyCfg  # noqa: F401
-from .policy.g1_tracking_bfm_sparse_onnx_policy_cfg import G1TrackingBfmSparseOnnxPolicyCfg  # noqa: F401
+from .policy.g1_tracking_bfm_sparse_onnx_policy_cfg import (  # noqa: F401
+    G1TrackingBfmSparseDoF,
+    G1TrackingBfmSparseOnnxPolicyCfg,
+    G1WbTeleopOnnxPolicyCfg,
+)
 from .policy.g1_twist_policy_cfg import G1TwistPolicyCfg  # noqa: F401
 from .policy.g1_unitree_policy_cfg import G1UnitreePolicyCfg, G1UnitreeWoGaitPolicyCfg  # noqa: F401
 
@@ -161,3 +166,56 @@ class g1_tracking_bfm_keyboard_sim(RlPipelineCfg):
     policy: G1TrackingBfmSparseOnnxPolicyCfg = G1TrackingBfmSparseOnnxPolicyCfg(
         ctrl_type="KeyboardTrackingBfmCtrl",
     )
+
+
+@cfg_registry.register
+class g1_wbteleop_sim2sim(RlPipelineCfg):
+    """Pico full-body retarget -> wbteleop ONNX -> G1 MuJoCo sim2sim."""
+
+    robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True)
+    _deploy_dof = G1_29DoF()
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg(
+        born_place_align=False,
+        random_heading=True,
+        dof=G1TrackingBfmSparseDoF(
+            stiffness=_deploy_dof.stiffness,
+            damping=_deploy_dof.damping,
+            torque_limits=_deploy_dof.torque_limits,
+        ),
+    )
+
+    ctrl: list[PicoRetargetTrackingBfmCtrlCfg] = [
+        PicoRetargetTrackingBfmCtrlCfg(),
+    ]
+
+    policy: G1WbTeleopOnnxPolicyCfg = G1WbTeleopOnnxPolicyCfg(
+        ctrl_type="PicoRetargetTrackingBfmCtrl",
+    )
+    hold_policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
+    hold_to_policy_blend_seconds: float = 0.75
+
+
+@cfg_registry.register
+class g1_wbteleop_real(RlPipelineCfg):
+    """Dev PC Pico full-body retarget -> wbteleop ONNX -> real G1 through wired Unitree DDS."""
+
+    robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True)
+    env: G1RealEnvCfg = G1RealEnvCfg(
+        env_type="UnitreeCppEnv",
+        unitree=G1UnitreeCfg(
+            net_if=_DEV_PC_UNITREE_NET_IF,
+        ),
+        born_place_align=False,
+        limit_pd_target_effort=False,
+    )
+
+    ctrl: list[PicoRetargetTrackingBfmCtrlCfg] = [
+        PicoRetargetTrackingBfmCtrlCfg(),
+    ]
+
+    policy: G1WbTeleopOnnxPolicyCfg = G1WbTeleopOnnxPolicyCfg(
+        ctrl_type="PicoRetargetTrackingBfmCtrl",
+    )
+    do_safety_check: bool = True

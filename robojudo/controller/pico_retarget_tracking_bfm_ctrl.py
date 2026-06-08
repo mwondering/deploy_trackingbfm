@@ -13,6 +13,10 @@ from robojudo.tools.tracking_bfm_sparse_command import (
     MujocoRetargetSnapshotBuilder,
     extract_tracking_bfm_sparse_command,
 )
+from robojudo.tools.tracking_bfm_wbteleop_command import (
+    DEFAULT_WBTELEOP_MOTION_BODY_NAMES,
+    WbTeleopRetargetCommandExtractor,
+)
 
 
 def _make_real_streamer():
@@ -52,11 +56,11 @@ def _make_real_snapshot_builder(cfg: PicoRetargetTrackingBfmCtrlCfg):
 
     model = mj.MjModel.from_xml_path(str(ROBOT_XML_DICT[cfg.robot]))
     data = mj.MjData(model)
-    return MujocoRetargetSnapshotBuilder(
-        model,
-        data,
-        (cfg.anchor_body_name, cfg.left_ee_body_name, cfg.right_ee_body_name),
-    )
+    body_names = list(DEFAULT_WBTELEOP_MOTION_BODY_NAMES)
+    for body_name in (cfg.anchor_body_name, cfg.left_ee_body_name, cfg.right_ee_body_name):
+        if body_name not in body_names:
+            body_names.append(body_name)
+    return MujocoRetargetSnapshotBuilder(model, data, tuple(body_names))
 
 
 @ctrl_registry.register
@@ -76,6 +80,7 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         self.streamer = streamer or _make_real_streamer()
         self.retarget = retarget or _make_real_retarget(cfg_ctrl)
         self.snapshot_builder = snapshot_builder or _make_real_snapshot_builder(cfg_ctrl)
+        self.wbteleop_extractor = WbTeleopRetargetCommandExtractor(joint_dof=29)
         self.reset()
 
     def reset(self):
@@ -83,6 +88,7 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         self._right_key_prev = False
         self._left_key_prev = False
         self._left_axis_click_prev = False
+        self.wbteleop_extractor.reset()
         self._last_output = self._neutral_output([])
 
     def _neutral_output(self, commands: list[str]) -> dict[str, Any]:
@@ -126,6 +132,7 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         if right_key_pressed:
             if self.state == "idle":
                 self.state = "active"
+                commands.append("[MOTION_RESET]")
             elif self.state == "active":
                 self.state = "pause"
             elif self.state == "pause":
@@ -148,11 +155,21 @@ class PicoRetargetTrackingBfmCtrl(Controller):
             ee_body_names=(self.cfg_ctrl.left_ee_body_name, self.cfg_ctrl.right_ee_body_name),
             state=self.state,
         )
+        try:
+            output.update(self.wbteleop_extractor.extract(snapshot, state=self.state))
+        except (KeyError, ValueError):
+            pass
         output["_commands"] = list(commands)
         return output
 
     def get_data(self):
-        smplx_data, _left_hand_data, _right_hand_data, controller_data, _headset_data = self.streamer.get_current_frame()
+        (
+            smplx_data,
+            _left_hand_data,
+            _right_hand_data,
+            controller_data,
+            _headset_data,
+        ) = self.streamer.get_current_frame()
         commands = self._step_state_machine(controller_data)
         timestamp_ns = int(time.time() * 1e9)
 

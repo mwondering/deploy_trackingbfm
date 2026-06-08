@@ -87,16 +87,38 @@ class RlPipeline(Pipeline):
         )
 
         self.env.update_dof_cfg(override_cfg=self.policy.cfg_action_dof)
+        self.hold_policy = None
+        if self._is_wbteleop_sim2sim:
+            self._policy_stiffness = np.asarray(self.env.stiffness, dtype=np.float32).copy()
+            self._policy_damping = np.asarray(self.env.damping, dtype=np.float32).copy()
+            self._policy_torque_limits = np.asarray(self.env.torque_limits, dtype=np.float32).copy()
+            cfg_hold_policy = getattr(self.cfg, "hold_policy", None)
+            if cfg_hold_policy is not None:
+                self.hold_policy = PolicyWrapper(
+                    cfg_policy=cfg_hold_policy,
+                    env_dof_cfg=self.env.dof_cfg,
+                    device=self.device,
+                )
+                self._hold_stiffness = self._fit_hold_dof_property("stiffness", self._policy_stiffness)
+                self._hold_damping = self._fit_hold_dof_property("damping", self._policy_damping)
+                self._hold_torque_limits = self._fit_hold_dof_property("torque_limits", self._policy_torque_limits)
         self.visualizer = self.env.visualizer
 
         self.freq = self.cfg.policy.freq
         self.dt = 1.0 / self.freq
         self._profile_sums = defaultdict(float)
         self._profile_count = 0
+        self._default_pose_mode_enabled = False
+        self._hold_to_policy_blend_start = None
+        self._hold_to_policy_blend_step = 0
+        self._hold_to_policy_blend_steps = 0
+        self._last_pd_target = None
 
         self.reset()
         self.self_check()
         self.policy.reset()  # reset frame counter after dry-run steps
+        if self.hold_policy is not None:
+            self.hold_policy.reset()
 
     def _profile_enabled(self):
         return bool(getattr(self.cfg.debug, "profile_timing", False))
@@ -140,9 +162,120 @@ class RlPipeline(Pipeline):
 
     def _set_default_pose_mode(self, enabled: bool):
         """Enable/disable default-pose mode on the inner policy (if supported)."""
+        self._default_pose_mode_enabled = bool(enabled)
+        if enabled:
+            self._hold_to_policy_blend_start = None
+            self._hold_to_policy_blend_step = 0
+            self._hold_to_policy_blend_steps = 0
         inner = self._inner_policy()
         if hasattr(inner, "set_default_pose_mode"):
             inner.set_default_pose_mode(enabled)
+        self._set_default_pose_hold_gains(enabled)
+
+    def _fit_hold_dof_property(self, prop_name: str, template: np.ndarray) -> np.ndarray:
+        value = getattr(self.hold_policy.cfg_action_dof, prop_name)
+        template = np.asarray(template, dtype=np.float32)
+        if value is None:
+            return template.copy()
+        return self.hold_policy.actions_adapter.fit(value, template=template).astype(np.float32)
+
+    @property
+    def _is_wbteleop_sim2sim(self) -> bool:
+        return (
+            self.cfg.__class__.__name__ == "g1_wbteleop_sim2sim"
+            and bool(getattr(self.cfg.env, "is_sim", False))
+        )
+
+    def _set_wbteleop_sim2sim_default_qpos(self):
+        if not self._is_wbteleop_sim2sim:
+            return
+        if not all(hasattr(self.env, name) for name in ("data", "model")):
+            return
+
+        default_pos = np.asarray(self.policy.default_pos, dtype=np.float64)
+        if default_pos.shape[0] != self.env.num_dofs:
+            raise ValueError(
+                f"wbteleop sim2sim default pose length mismatch: default={default_pos.shape[0]}, "
+                f"env={self.env.num_dofs}"
+            )
+        self.env.data.qpos[-self.env.num_dofs :] = default_pos  # pyright: ignore[reportAttributeAccessIssue]
+        self.env.data.qvel[:] = 0.0  # pyright: ignore[reportAttributeAccessIssue]
+        self.env.data.ctrl[:] = 0.0  # pyright: ignore[reportAttributeAccessIssue]
+
+        import mujoco
+
+        mujoco.mj_forward(self.env.model, self.env.data)  # pyright: ignore[reportAttributeAccessIssue]
+        self.env.update()
+
+    def _set_default_pose_hold_gains(self, enabled: bool):
+        if not self._is_wbteleop_sim2sim:
+            return
+
+        if enabled and self.hold_policy is not None:
+            stiffness = self._hold_stiffness
+            damping = self._hold_damping
+            torque_limits = self._hold_torque_limits
+        elif enabled:
+            hold_dof = self.cfg.env.dof
+            stiffness = np.asarray(hold_dof.stiffness, dtype=np.float32)
+            damping = np.asarray(hold_dof.damping, dtype=np.float32)
+            torque_limits = np.asarray(hold_dof.torque_limits, dtype=np.float32)
+        else:
+            stiffness = self._policy_stiffness
+            damping = self._policy_damping
+            torque_limits = self._policy_torque_limits
+
+        if stiffness.shape[0] != self.env.num_dofs or damping.shape[0] != self.env.num_dofs:
+            raise ValueError(
+                f"default-pose hold gain length mismatch: stiffness={stiffness.shape[0]}, "
+                f"damping={damping.shape[0]}, env={self.env.num_dofs}"
+            )
+        if torque_limits.shape[0] != self.env.num_dofs:
+            raise ValueError(
+                f"default-pose hold torque limit length mismatch: torque_limits={torque_limits.shape[0]}, "
+                f"env={self.env.num_dofs}"
+            )
+
+        self.env.set_gains(stiffness, damping)
+        self.env.torque_limits = torque_limits
+
+    @property
+    def _use_wbteleop_hold_policy(self) -> bool:
+        return self._is_wbteleop_sim2sim and self._default_pose_mode_enabled and self.hold_policy is not None
+
+    def _policy_for_step(self):
+        return self.hold_policy if self._use_wbteleop_hold_policy else self.policy
+
+    def _start_hold_to_policy_blend(self):
+        if not self._use_wbteleop_hold_policy:
+            return
+        seconds = float(getattr(self.cfg, "hold_to_policy_blend_seconds", 0.0) or 0.0)
+        steps = int(seconds * self.freq)
+        if steps <= 0:
+            return
+        if self._last_pd_target is None:
+            self._hold_to_policy_blend_start = np.asarray(self.env.dof_pos, dtype=np.float32)
+        else:
+            self._hold_to_policy_blend_start = np.asarray(self._last_pd_target, dtype=np.float32).copy()
+        self._hold_to_policy_blend_step = 0
+        self._hold_to_policy_blend_steps = steps
+
+    @property
+    def _hold_to_policy_blend_active(self) -> bool:
+        return (
+            self._hold_to_policy_blend_start is not None
+            and self._hold_to_policy_blend_step < self._hold_to_policy_blend_steps
+        )
+
+    def _apply_hold_to_policy_blend(self, pd_target):
+        if not self._hold_to_policy_blend_active:
+            return pd_target
+        alpha = (self._hold_to_policy_blend_step + 1) / max(self._hold_to_policy_blend_steps, 1)
+        blended = (1 - alpha) * self._hold_to_policy_blend_start + alpha * pd_target
+        self._hold_to_policy_blend_step += 1
+        if self._hold_to_policy_blend_step >= self._hold_to_policy_blend_steps:
+            self._hold_to_policy_blend_start = None
+        return blended
 
     def reset(self):
         logger.info("Pipeline reset")
@@ -150,7 +283,12 @@ class RlPipeline(Pipeline):
 
         self.env.reset()
         self.policy.reset()
+        if self.hold_policy is not None:
+            self.hold_policy.reset()
         self.ctrl_manager.reset()
+        self._set_wbteleop_sim2sim_default_qpos()
+        if self._is_wbteleop_sim2sim and self._has_default_pose_mode:
+            self._set_default_pose_mode(True)
 
         # Blend-out state: transitions policy → init pose at end of motion.
         self._blend_out_active = False
@@ -205,6 +343,7 @@ class RlPipeline(Pipeline):
                         logger.info(
                             f"{command} — starting motion from frame 0"
                         )
+                        self._start_hold_to_policy_blend()
                         self._set_default_pose_mode(False)
                     else:
                         # Legacy path: full blend-in needed.
@@ -228,9 +367,10 @@ class RlPipeline(Pipeline):
 
         self.ctrl_manager.post_step_callback(ctrl_data)
 
-        self.policy.post_step_callback(commands)
+        active_policy = getattr(self, "_active_policy_for_callback", self.policy)
+        active_policy.post_step_callback(commands)
         if self.visualizer is not None:
-            self.policy.debug_viz(self.visualizer, env_data, ctrl_data, extras)
+            active_policy.debug_viz(self.visualizer, env_data, ctrl_data, extras)
 
         self.safety_check()
         if self.cfg.debug.log_obs:
@@ -263,11 +403,13 @@ class RlPipeline(Pipeline):
         if len(commands) > 0:
             logger.info(f"{'=' * 10} COMMANDS {'=' * 10}\n{commands}")
 
-        obs, extras = self.policy.get_observation(env_data, ctrl_data)
+        active_policy = self._policy_for_step()
+        self._active_policy_for_callback = active_policy
+        obs, extras = active_policy.get_observation(env_data, ctrl_data)
         t_now = time.perf_counter()
         timings["policy_obs"] = t_now - t_last
         t_last = t_now
-        pd_target = self.policy.get_pd_target(obs)
+        pd_target = active_policy.get_pd_target(obs)
         t_now = time.perf_counter()
         timings["policy_action"] = t_now - t_last
         t_last = t_now
@@ -288,6 +430,9 @@ class RlPipeline(Pipeline):
             alpha = min(self._blend_out_step / max(self._blend_out_duration, 1), 1.0)
             pd_target = (1 - alpha) * pd_target + alpha * self._init_dof_pos
             self._blend_out_step += 1
+
+        pd_target = self._apply_hold_to_policy_blend(pd_target)
+        self._last_pd_target = np.asarray(pd_target, dtype=np.float32).copy()
 
         if not dry_run:
             self.env.step(pd_target, extras.get("hand_pose", None))

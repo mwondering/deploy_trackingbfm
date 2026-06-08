@@ -1,10 +1,13 @@
 from robojudo.config import cfg_registry
+from robojudo.config.g1.env.g1_env_cfg import G1_29DoF
 from robojudo.config.g1.env.g1_mujuco_env_cfg import G1MujocoEnvCfg
 from robojudo.config.g1.env.g1_real_env_cfg import G1RealEnvCfg
 from robojudo.config.g1.policy.g1_tracking_bfm_sparse_onnx_policy_cfg import (
     G1TrackingBfmSparseDoF,
     G1TrackingBfmSparseOnnxPolicyCfg,
+    G1WbTeleopOnnxPolicyCfg,
 )
+from robojudo.config.g1.policy.g1_unitree_policy_cfg import G1UnitreeWoGaitPolicyCfg
 from robojudo.controller.ctrl_cfgs import (
     KeyboardTrackingBfmCtrlCfg,
     PicoLightSparseCtrlCfg,
@@ -87,6 +90,65 @@ def test_g1_tracking_bfm_keyboard_sim_config_is_registered() -> None:
     assert cfg.policy.ctrl_type == "KeyboardTrackingBfmCtrl"
     assert cfg.policy.onnx_path.endswith(".onnx")
     assert len(cfg.policy.action_scales) == cfg.policy.action_dof.num_dofs
+    assert cfg.debug.log_obs is True
+
+
+def test_g1_wbteleop_sim2sim_config_is_registered_for_0608_checkpoint() -> None:
+    cfg_class = cfg_registry.get("g1_wbteleop_sim2sim")
+    cfg = cfg_class()
+
+    assert isinstance(cfg.env, G1MujocoEnvCfg)
+    assert cfg.env.born_place_align is False
+    assert cfg.env.random_heading is True
+    assert len(cfg.ctrl) == 1
+    assert isinstance(cfg.ctrl[0], PicoRetargetTrackingBfmCtrlCfg)
+    assert isinstance(cfg.policy, G1WbTeleopOnnxPolicyCfg)
+    assert cfg.policy.policy_type == "WbTeleopOnnxPolicy"
+    assert cfg.policy.ctrl_type == "PicoRetargetTrackingBfmCtrl"
+    assert cfg.policy.onnx_path == (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        "0608_ckpt_bcrl/deploy_model_16000.onnx"
+    )
+    assert cfg.policy.env_yaml_path == (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        "0608_ckpt_bcrl/params/env.yaml"
+    )
+    assert cfg.policy.obs_group == "actor"
+    assert cfg.policy.expected_obs_dim == 886
+    assert cfg.policy.action_dof.num_dofs == 29
+    assert len(cfg.policy.action_scales) == cfg.policy.action_dof.num_dofs
+    assert isinstance(cfg.hold_policy, G1UnitreeWoGaitPolicyCfg)
+    assert cfg.hold_to_policy_blend_seconds == 0.75
+    assert cfg.env.dof.default_pos == G1TrackingBfmSparseDoF().default_pos
+    assert cfg.env.dof.stiffness == G1_29DoF().stiffness
+    assert cfg.env.dof.damping == G1_29DoF().damping
+
+
+def test_g1_wbteleop_real_config_is_registered_for_dev_pc_dds() -> None:
+    cfg_class = cfg_registry.get("g1_wbteleop_real")
+    cfg = cfg_class()
+
+    assert isinstance(cfg.env, G1RealEnvCfg)
+    assert cfg.env.env_type == "UnitreeCppEnv"
+    assert cfg.env.unitree.net_if == "eth0"
+    assert cfg.env.born_place_align is False
+    assert cfg.env.limit_pd_target_effort is False
+    assert len(cfg.ctrl) == 1
+    assert isinstance(cfg.ctrl[0], PicoRetargetTrackingBfmCtrlCfg)
+    assert isinstance(cfg.policy, G1WbTeleopOnnxPolicyCfg)
+    assert cfg.policy.policy_type == "WbTeleopOnnxPolicy"
+    assert cfg.policy.ctrl_type == "PicoRetargetTrackingBfmCtrl"
+    assert cfg.policy.onnx_path == (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        "0608_ckpt_bcrl/deploy_model_16000.onnx"
+    )
+    assert cfg.policy.env_yaml_path == (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        "0608_ckpt_bcrl/params/env.yaml"
+    )
+    assert cfg.policy.obs_group == "actor"
+    assert cfg.policy.expected_obs_dim == 886
+    assert cfg.do_safety_check is True
     assert cfg.debug.log_obs is True
 
 

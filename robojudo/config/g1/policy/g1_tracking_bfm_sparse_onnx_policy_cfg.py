@@ -18,6 +18,22 @@ _DEFAULT_TRACKING_BFM_ENV_YAML = os.environ.get(
         "0529_ckpt/latent_tracking_encoder/params/env.yaml"
     ),
 )
+_DEFAULT_WBTELEOP_ONNX = os.environ.get(
+    "ROBOJUDO_WBTELEOP_ONNX",
+    (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        # "0608_ckpt_bcrl/deploy_model_16000.onnx"
+        "0608_ckpt_bcrl/deploy_model_16000.onnx"
+    ),
+)
+_DEFAULT_WBTELEOP_ENV_YAML = os.environ.get(
+    "ROBOJUDO_WBTELEOP_ENV_YAML",
+    (
+        "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
+        "0608_ckpt_bcrl/params/env.yaml"
+        # "0608_ckpt_bcrl/params/env.yaml"
+    ),
+)
 
 
 class G1TrackingBfmSparseDoF(G1_29DoF):
@@ -111,3 +127,14 @@ class G1TrackingBfmSparseOnnxPolicyCfg(TrackingBfmSparseOnnxPolicyCfg):
 
     obs_dof: DoFConfig = G1TrackingBfmSparseDoF()
     action_dof: DoFConfig = G1TrackingBfmSparseDoF()
+
+
+class G1WbTeleopOnnxPolicyCfg(G1TrackingBfmSparseOnnxPolicyCfg):
+    """ONNX actor config for the 0608 wbteleop G1 tracking checkpoint."""
+
+    policy_type: str = "WbTeleopOnnxPolicy"
+    onnx_path: str = _DEFAULT_WBTELEOP_ONNX
+    env_yaml_path: str | None = _DEFAULT_WBTELEOP_ENV_YAML
+    obs_group: str | None = "actor"
+    proprio_obs_group: str | None = None
+    expected_obs_dim: int | None = 886

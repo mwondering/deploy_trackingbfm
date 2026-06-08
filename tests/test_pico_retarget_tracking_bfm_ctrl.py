@@ -11,6 +11,7 @@ from robojudo.tools.tracking_bfm_sparse_command import (
     DEFAULT_SPARSE_EE_POSE,
     RetargetMotionSnapshot,
 )
+from robojudo.tools.tracking_bfm_wbteleop_command import DEFAULT_WBTELEOP_MOTION_BODY_NAMES
 
 
 class _FakeStreamer:
@@ -78,6 +79,33 @@ class _FakeSnapshotBuilder:
         )
 
 
+class _FakeWbTeleopSnapshotBuilder:
+    def build(self, qpos, timestamp_ns):
+        body_names = DEFAULT_WBTELEOP_MOTION_BODY_NAMES
+        body_pos_w = np.zeros((len(body_names), 3), dtype=np.float32)
+        body_quat_w = np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (len(body_names), 1))
+        body_lin_vel_w = np.zeros_like(body_pos_w)
+        body_ang_vel_w = np.zeros_like(body_pos_w)
+        body_pos_w[body_names.index("pelvis")] = [0.0, 0.0, 0.8]
+        body_ang_vel_w[body_names.index("torso_link")] = [0.0, 0.1, 0.2]
+        for body_name in (
+            "left_wrist_yaw_link",
+            "right_wrist_yaw_link",
+            "left_ankle_roll_link",
+            "right_ankle_roll_link",
+        ):
+            body_pos_w[body_names.index(body_name)] = [0.2, 0.0, 0.9]
+        return RetargetMotionSnapshot(
+            body_names=body_names,
+            body_pos_w=body_pos_w,
+            body_quat_w=body_quat_w,
+            body_lin_vel_w=body_lin_vel_w,
+            body_ang_vel_w=body_ang_vel_w,
+            timestamp_ns=timestamp_ns,
+            qpos=np.concatenate([np.zeros(7, dtype=np.float32), np.asarray(qpos, dtype=np.float32)]),
+        )
+
+
 def _frame(*, qpos: list[float], right_a=False, left_x=False, timestamp_ns=1) -> tuple:
     smplx_data = {"qpos": np.asarray(qpos, dtype=np.float32)}
     controller_data = {
@@ -118,6 +146,21 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         np.testing.assert_allclose(second["anchor_height_w"], [1.0], atol=1e-6)
         self.assertIsInstance(builder.calls[1][1], int)
 
+    def test_right_key_enters_policy_from_idle(self):
+        streamer = _FakeStreamer([_frame(qpos=[0.0], right_a=True, timestamp_ns=1)])
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeSnapshotBuilder(),
+        )
+
+        data = ctrl.get_data()
+        processed, commands = ctrl.process_triggers(data)
+
+        self.assertEqual(processed["state"], "active")
+        self.assertEqual(commands, ["[MOTION_RESET]"])
+
     def test_idle_output_uses_sparse_training_default_pose(self):
         streamer = _FakeStreamer([_frame(qpos=[0.0], right_a=False)])
         ctrl = PicoRetargetTrackingBfmCtrl(
@@ -149,7 +192,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
             snapshot_builder=_FakeSnapshotBuilder(),
         )
 
-        active = ctrl.get_data()
+        ctrl.get_data()
         still_active = ctrl.get_data()
         paused = ctrl.get_data()
         frozen = ctrl.get_data()
@@ -172,6 +215,29 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
 
         self.assertEqual(processed["state"], "exit")
         self.assertEqual(commands, ["[SHUTDOWN]"])
+
+    def test_active_state_also_outputs_wbteleop_retarget_terms_when_snapshot_has_full_body_set(self):
+        streamer = _FakeStreamer(
+            [
+                _frame(qpos=[0.0] * 29, right_a=True),
+                _frame(qpos=[0.01] * 29, right_a=False),
+            ]
+        )
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeWbTeleopSnapshotBuilder(),
+        )
+
+        ctrl.get_data()
+        data = ctrl.get_data()
+
+        self.assertEqual(data["command"].shape, (58,))
+        self.assertEqual(data["ref_limb_ee_pose_b"].shape, (36,))
+        self.assertEqual(data["motion_ref_ang_vel"].shape, (3,))
+        np.testing.assert_allclose(data["command"][:29], np.full(29, 0.01, dtype=np.float32), atol=1e-6)
+        self.assertEqual(tuple(data["_ref_body_names"]), DEFAULT_WBTELEOP_MOTION_BODY_NAMES)
 
 
 if __name__ == "__main__":
