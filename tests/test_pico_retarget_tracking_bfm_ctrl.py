@@ -116,6 +116,15 @@ def _frame(*, qpos: list[float], right_a=False, left_x=False, timestamp_ns=1) ->
     return smplx_data, None, None, controller_data, None
 
 
+def _frame_without_smplx(*, right_a=False, left_x=False, timestamp_ns=1) -> tuple:
+    controller_data = {
+        "RightController": {"key_one": right_a},
+        "LeftController": {"key_one": left_x},
+        "timestamp": timestamp_ns,
+    }
+    return None, None, None, controller_data, None
+
+
 class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
     def test_active_state_retargets_and_outputs_sparse_tracking_bfm_command(self):
         streamer = _FakeStreamer(
@@ -160,6 +169,30 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
 
         self.assertEqual(processed["state"], "active")
         self.assertEqual(commands, ["[MOTION_RESET]"])
+
+    def test_right_key_waits_for_valid_smplx_before_motion_reset(self):
+        streamer = _FakeStreamer(
+            [
+                _frame_without_smplx(right_a=True, timestamp_ns=1),
+                _frame(qpos=[0.0], right_a=False, timestamp_ns=2),
+            ]
+        )
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeSnapshotBuilder(),
+        )
+
+        first = ctrl.get_data()
+        first_processed, first_commands = ctrl.process_triggers(first)
+        second = ctrl.get_data()
+        second_processed, second_commands = ctrl.process_triggers(second)
+
+        self.assertEqual(first_processed["state"], "active")
+        self.assertEqual(first_commands, [])
+        self.assertEqual(second_processed["state"], "active")
+        self.assertEqual(second_commands, ["[MOTION_RESET]"])
 
     def test_idle_output_uses_sparse_training_default_pose(self):
         streamer = _FakeStreamer([_frame(qpos=[0.0], right_a=False)])

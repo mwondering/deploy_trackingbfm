@@ -1,6 +1,7 @@
 import importlib
 import sys
 import types
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -49,3 +50,40 @@ def test_filter_pd_target_limits_targets_by_training_effort_range():
     filtered = env._filter_pd_target(np.array([2.0, 2.0, -3.0], dtype=np.float32))
 
     np.testing.assert_allclose(filtered, np.array([1.4, 0.7, -2.1], dtype=np.float32), atol=1e-6)
+
+
+def test_update_caches_fk_info_when_fk_is_enabled():
+    UnitreeCppEnv = importlib.import_module("robojudo.environment.unitree_cpp_env").UnitreeCppEnv
+    env = UnitreeCppEnv.__new__(UnitreeCppEnv)
+    env.num_dofs = 3
+    env._dof_idx = None
+    env.robot = "g1"
+    env.born_place_align = False
+    env._odometry_type = "DUMMY"
+    env.update_with_fk = True
+    env._torso_name = "torso_link"
+    env.RemoteControllerHandler = None
+    env.unitree = SimpleNamespace(
+        get_robot_state=lambda: SimpleNamespace(
+            motor_state=SimpleNamespace(q=[0.1, 0.2, 0.3], dq=[0.0, 0.0, 0.0]),
+            imu_state=SimpleNamespace(
+                quaternion=[1.0, 0.0, 0.0, 0.0],
+                gyroscope=[0.0, 0.0, 0.0],
+                rpy=[0.0, 0.0, 0.0],
+            ),
+            wireless_remote=None,
+        )
+    )
+    fk_info = {
+        "torso_link": {
+            "pos": np.array([0.0, 0.0, 0.8], dtype=np.float32),
+            "quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            "ang_vel": np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        }
+    }
+    env.fk = lambda: fk_info
+
+    env.update()
+
+    assert env.fk_info is not None
+    np.testing.assert_allclose(env.fk_info["torso_link"]["pos"], fk_info["torso_link"]["pos"], atol=1e-6)

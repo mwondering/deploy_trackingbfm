@@ -147,6 +147,7 @@ class UnitreeCppEnv(Environment):
         # FK
         if self.update_with_fk:
             fk_info = self.fk()
+            self._fk_info = fk_info.copy()
             self._torso_pos = fk_info[self._torso_name]["pos"]
             if self.robot != "h1":
                 self._torso_quat = fk_info[self._torso_name]["quat"]

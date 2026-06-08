@@ -234,3 +234,86 @@ def test_wbteleop_onnx_policy_uses_default_pose_mode_until_retarget_becomes_acti
         assert policy._hold_default_pose is False
         np.testing.assert_allclose(obs[:58], np.zeros(58, dtype=np.float32), atol=1e-6)
         np.testing.assert_allclose(policy.get_action(obs), np.ones(29, dtype=np.float32), atol=1e-6)
+
+
+def test_wbteleop_onnx_policy_holds_when_active_reference_is_incomplete() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        default_pos = (np.arange(29, dtype=np.float32) * 0.03).tolist()
+        policy = _make_policy(str(onnx_path), str(env_yaml_path), default_pos=default_pos)
+        policy.set_default_pose_mode(False)
+
+        obs, _ = policy.get_observation(
+            _env_data(),
+            {
+                "PicoRetargetTrackingBfmCtrl": {
+                    "state": "active",
+                    "ref_limb_ee_pose_b": np.zeros(36, dtype=np.float32),
+                    "motion_ref_ang_vel": np.zeros(3, dtype=np.float32),
+                }
+            },
+        )
+
+        assert policy._hold_default_pose is True
+        np.testing.assert_allclose(obs[:29], np.asarray(default_pos, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
+
+
+def test_wbteleop_onnx_policy_resets_history_when_entering_active() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        policy = _make_policy(str(onnx_path), str(env_yaml_path))
+
+        idle_ctrl = {"PicoRetargetTrackingBfmCtrl": {"state": "idle"}}
+        policy.get_observation(_env_data(), idle_ctrl)
+
+        active_ref = np.full(36, 7.0, dtype=np.float32)
+        active_ctrl = {
+            "PicoRetargetTrackingBfmCtrl": {
+                "state": "active",
+                "command": np.zeros(58, dtype=np.float32),
+                "ref_limb_ee_pose_b": active_ref,
+                "motion_ref_ang_vel": np.zeros(3, dtype=np.float32),
+            }
+        }
+
+        obs, _ = policy.get_observation(_env_data(), active_ctrl)
+
+        assert policy._hold_default_pose is False
+        ref_history = obs[58 : 58 + 5 * 36].reshape(5, 36)
+        np.testing.assert_allclose(ref_history, np.tile(active_ref, (5, 1)), atol=1e-6)
+
+
+def test_wbteleop_onnx_policy_holds_when_robot_limb_pose_is_unavailable() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        policy = _make_policy(str(onnx_path), str(env_yaml_path))
+        env_data = _env_data()
+        env_data.fk_info = None
+
+        obs, _ = policy.get_observation(
+            env_data,
+            {
+                "PicoRetargetTrackingBfmCtrl": {
+                    "state": "active",
+                    "command": np.zeros(58, dtype=np.float32),
+                    "ref_limb_ee_pose_b": np.zeros(36, dtype=np.float32),
+                    "motion_ref_ang_vel": np.zeros(3, dtype=np.float32),
+                }
+            },
+        )
+
+        assert policy._hold_default_pose is True
+        np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)

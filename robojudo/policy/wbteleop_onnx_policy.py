@@ -117,10 +117,18 @@ class WbTeleopOnnxPolicy(Policy):
         for buffer in self._term_buffers.values():
             buffer.clear()
 
+    def _clear_term_history(self) -> None:
+        for buffer in self._term_buffers.values():
+            buffer.clear()
+
     def set_default_pose_mode(self, enabled: bool):
+        was_holding = self._hold_default_pose
         self._default_pose_mode = bool(enabled)
         self._hold_default_pose = bool(enabled)
         if enabled:
+            self.last_action = np.zeros(self.action_dim, dtype=np.float32)
+        elif was_holding:
+            self._clear_term_history()
             self.last_action = np.zeros(self.action_dim, dtype=np.float32)
 
     def post_step_callback(self, commands: list[str] | None = None):
@@ -248,11 +256,52 @@ class WbTeleopOnnxPolicy(Policy):
             terms["robot_limb_ee_pose_b"] = self._fk_limb_pose_b(env_data, self.term_cfgs["robot_limb_ee_pose_b"])
         return terms
 
+    def _has_active_reference(self, ctrl: dict[str, Any]) -> bool:
+        if ctrl.get("state") != "active":
+            return False
+        for term_name in ("command", "ref_limb_ee_pose_b", "motion_ref_ang_vel"):
+            value = ctrl.get(term_name)
+            if value is None:
+                return False
+            if np.asarray(value, dtype=np.float32).reshape(-1).shape[0] != _WBTELEOP_TERM_DIMS[term_name]:
+                return False
+        return True
+
+    def _has_robot_limb_pose(self, env_data, ctrl: dict[str, Any]) -> bool:
+        value = ctrl.get("robot_limb_ee_pose_b")
+        if value is not None:
+            return (
+                np.asarray(value, dtype=np.float32).reshape(-1).shape[0]
+                == _WBTELEOP_TERM_DIMS["robot_limb_ee_pose_b"]
+            )
+
+        fk_info = getattr(env_data, "fk_info", None)
+        if fk_info is None:
+            return False
+
+        term_cfg = self.term_cfgs["robot_limb_ee_pose_b"]
+        params = term_cfg.get("params", {})
+        body_names = tuple(params.get("body_names", DEFAULT_WBTELEOP_LIMB_BODY_NAMES))
+        anchor_body_name = params.get("anchor_body_name", DEFAULT_WBTELEOP_LIMB_ANCHOR_BODY_NAME)
+        for body_name in (anchor_body_name, *body_names):
+            body_info = fk_info.get(body_name)
+            if body_info is None or body_info.get("pos") is None or body_info.get("quat") is None:
+                return False
+        return True
+
     def get_observation(self, env_data, ctrl_data) -> tuple[np.ndarray, dict]:
         if self.ctrl_type not in ctrl_data:
             raise KeyError(f"Controller data '{self.ctrl_type}' not found in ctrl_data.")
         ctrl = ctrl_data[self.ctrl_type]
-        self._hold_default_pose = self._default_pose_mode or ctrl.get("state") != "active"
+        previous_hold_default_pose = self._hold_default_pose
+        self._hold_default_pose = (
+            self._default_pose_mode
+            or not self._has_active_reference(ctrl)
+            or not self._has_robot_limb_pose(env_data, ctrl)
+        )
+        if previous_hold_default_pose and not self._hold_default_pose:
+            self._clear_term_history()
+            self.last_action = np.zeros(self.action_dim, dtype=np.float32)
         if self._hold_default_pose:
             self.last_action = np.zeros(self.action_dim, dtype=np.float32)
         current = self._current_terms(env_data, ctrl)

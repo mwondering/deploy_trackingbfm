@@ -88,6 +88,7 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         self._right_key_prev = False
         self._left_key_prev = False
         self._left_axis_click_prev = False
+        self._pending_motion_reset = False
         self.wbteleop_extractor.reset()
         self._last_output = self._neutral_output([])
 
@@ -126,13 +127,14 @@ class PicoRetargetTrackingBfmCtrl(Controller):
 
         if left_key_pressed or left_axis_click_pressed:
             self.state = "exit"
+            self._pending_motion_reset = False
             commands.append("[SHUTDOWN]")
             return commands
 
         if right_key_pressed:
             if self.state == "idle":
                 self.state = "active"
-                commands.append("[MOTION_RESET]")
+                self._pending_motion_reset = True
             elif self.state == "active":
                 self.state = "pause"
             elif self.state == "pause":
@@ -175,6 +177,9 @@ class PicoRetargetTrackingBfmCtrl(Controller):
 
         if self.state == "active" and smplx_data is not None:
             self._last_output = self._active_output(smplx_data, timestamp_ns, commands)
+            if self._pending_motion_reset:
+                self._last_output["_commands"].append("[MOTION_RESET]")
+                self._pending_motion_reset = False
         elif self.state == "idle":
             self._last_output = self._neutral_output(commands)
         else:
