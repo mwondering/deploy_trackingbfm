@@ -194,6 +194,7 @@ class g1_wbteleop_sim2sim(RlPipelineCfg):
     )
     hold_policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
     hold_to_policy_blend_seconds: float = 0.75
+    wbteleop_default_base_height: float | None = 0.76
 
 
 @cfg_registry.register

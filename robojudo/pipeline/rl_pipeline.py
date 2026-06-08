@@ -198,6 +198,9 @@ class RlPipeline(Pipeline):
                 f"wbteleop sim2sim default pose length mismatch: default={default_pos.shape[0]}, "
                 f"env={self.env.num_dofs}"
             )
+        default_base_height = getattr(self.cfg, "wbteleop_default_base_height", None)
+        if default_base_height is not None:
+            self.env.data.qpos[2] = float(default_base_height)  # pyright: ignore[reportAttributeAccessIssue]
         self.env.data.qpos[-self.env.num_dofs :] = default_pos  # pyright: ignore[reportAttributeAccessIssue]
         self.env.data.qvel[:] = 0.0  # pyright: ignore[reportAttributeAccessIssue]
         self.env.data.ctrl[:] = 0.0  # pyright: ignore[reportAttributeAccessIssue]

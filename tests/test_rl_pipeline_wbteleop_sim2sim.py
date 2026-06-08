@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import numpy as np
 from box import Box
 
 from robojudo.config.g1.g1_custom_cfg import (
+    G1TrackingBfmSparseDoF,
     g1_tracking_bfm_pico_light_sim,
     g1_wbteleop_real,
     g1_wbteleop_sim2sim,
@@ -25,6 +29,24 @@ class _FakeEnv:
         self.damping = np.asarray(damping, dtype=np.float32)
 
 
+class _FakeMujocoEnv(_FakeEnv):
+    def __init__(self):
+        super().__init__()
+        self.model = object()
+        self.data = types.SimpleNamespace(
+            qpos=np.zeros(7 + self.num_dofs, dtype=np.float64),
+            qvel=np.ones(6 + self.num_dofs, dtype=np.float64),
+            ctrl=np.ones(self.num_dofs, dtype=np.float64),
+            forwarded=False,
+        )
+        self.data.qpos[2] = 0.793
+        self.updated = False
+
+    def update(self):
+        self.updated = True
+        self.dof_pos = self.data.qpos[-self.num_dofs :].astype(np.float32)
+
+
 def _make_pipeline_shell(cfg):
     pipeline = RlPipeline.__new__(RlPipeline)
     pipeline.cfg = cfg
@@ -39,6 +61,32 @@ def _make_pipeline_shell(cfg):
     pipeline._hold_to_policy_blend_steps = 0
     pipeline._last_pd_target = None
     return pipeline
+
+
+def test_wbteleop_sim2sim_default_qpos_uses_training_root_height(monkeypatch) -> None:
+    cfg = g1_wbteleop_sim2sim()
+    pipeline = _make_pipeline_shell(cfg)
+    pipeline.env = _FakeMujocoEnv()
+    pipeline.policy = types.SimpleNamespace(
+        default_pos=np.asarray(G1TrackingBfmSparseDoF().default_pos, dtype=np.float32)
+    )
+
+    fake_mujoco = types.SimpleNamespace(
+        mj_forward=lambda model, data: setattr(data, "forwarded", True)
+    )
+    monkeypatch.setitem(sys.modules, "mujoco", fake_mujoco)
+
+    pipeline._set_wbteleop_sim2sim_default_qpos()
+
+    assert pipeline.env.data.qpos[2] == cfg.wbteleop_default_base_height
+    np.testing.assert_allclose(
+        pipeline.env.data.qpos[-pipeline.env.num_dofs :],
+        np.asarray(G1TrackingBfmSparseDoF().default_pos, dtype=np.float64),
+    )
+    np.testing.assert_allclose(pipeline.env.data.qvel, 0.0)
+    np.testing.assert_allclose(pipeline.env.data.ctrl, 0.0)
+    assert pipeline.env.data.forwarded
+    assert pipeline.env.updated
 
 
 def test_wbteleop_sim2sim_hold_gains_switch_from_deploy_to_policy() -> None:
