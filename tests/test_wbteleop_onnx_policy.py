@@ -170,6 +170,79 @@ def test_wbteleop_onnx_policy_assembles_yaml_ordered_886_dim_observation() -> No
         assert action.shape == (29,)
 
 
+def test_wbteleop_onnx_policy_formats_full_observation_history_one_term_per_line() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        policy = _make_policy(str(onnx_path), str(env_yaml_path))
+
+        ctrl = {
+            "PicoRetargetTrackingBfmCtrl": {
+                "state": "active",
+                "command": np.zeros(58, dtype=np.float32),
+                "ref_limb_ee_pose_b": np.ones(36, dtype=np.float32),
+                "motion_ref_ang_vel": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+            }
+        }
+        policy.get_observation(_env_data(), ctrl)
+        ctrl["PicoRetargetTrackingBfmCtrl"]["command"] = np.arange(58, dtype=np.float32)
+        ctrl["PicoRetargetTrackingBfmCtrl"]["ref_limb_ee_pose_b"] = np.full(36, 2.0, dtype=np.float32)
+        policy.get_observation(_env_data(), ctrl)
+
+        lines = policy.format_last_obs_debug_lines()
+
+        assert len(lines) == 1 + len(policy.term_order)
+        assert lines[0] == "hold=False obs_dim=886"
+        assert all("\n" not in line for line in lines)
+        assert [line.split(" ", 1)[0] for line in lines[1:]] == policy.term_order
+        command_line = next(line for line in lines if line.startswith("command "))
+        ref_line = next(line for line in lines if line.startswith("ref_limb_ee_pose_b "))
+        assert "history=1 dim=58 h0=[ 0., 1., 2." in command_line
+        assert "history=5 dim=36" in ref_line
+        assert "h0=[1.,1.,1." in ref_line
+        assert "h4=[2.,2.,2." in ref_line
+
+        policy.set_default_pose_mode(True)
+        hold_lines = policy.format_last_obs_debug_lines()
+
+        assert hold_lines[0] == "hold=True obs_dim=886"
+        hold_command_line = next(line for line in hold_lines if line.startswith("command "))
+        hold_ref_line = next(line for line in hold_lines if line.startswith("ref_limb_ee_pose_b "))
+        hold_motion_ref_line = next(line for line in hold_lines if line.startswith("motion_ref_ang_vel "))
+        assert "h0=[0.,0.,0." in hold_command_line
+        assert "h4=[0.,0.,0." in hold_ref_line
+        assert "h0=[0.,0.,0.]" in hold_motion_ref_line
+
+
+def test_wbteleop_hold_debug_observation_keeps_live_proprio_terms() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        policy = _make_policy(str(onnx_path), str(env_yaml_path))
+
+        policy.set_default_pose_mode(True)
+        policy.update_hold_debug_observation(_env_data())
+
+        debug_terms = policy._last_obs_debug_terms
+        np.testing.assert_allclose(debug_terms["command"], np.zeros((1, 58), dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(debug_terms["ref_limb_ee_pose_b"], np.zeros((5, 36), dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(debug_terms["motion_ref_ang_vel"], np.zeros((1, 3), dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(
+            debug_terms["base_ang_vel"],
+            np.tile(np.array([[0.1, 0.2, 0.3]], dtype=np.float32), (5, 1)),
+            atol=1e-6,
+        )
+        assert np.any(np.abs(debug_terms["joint_pos"]) > 1e-6)
+        assert np.any(np.abs(debug_terms["joint_vel"]) > 1e-6)
+        assert np.any(np.abs(debug_terms["robot_limb_ee_pose_b"]) > 1e-6)
+
+
 def test_wbteleop_policy_reports_raw_and_computed_proprio_debug_terms() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         onnx_path = Path(tmpdir) / "policy.onnx"
@@ -219,8 +292,8 @@ def test_wbteleop_onnx_policy_holds_default_pose_when_retarget_controller_is_idl
         obs, _ = policy.get_observation(_env_data(), ctrl)
         action = policy.get_action(obs)
 
-        np.testing.assert_allclose(obs[:29], np.asarray(default_pos, dtype=np.float32), atol=1e-6)
-        np.testing.assert_allclose(obs[29:58], np.zeros(29, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(obs[:58], np.zeros(58, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(obs[58 : 58 + 5 * 36], np.zeros(5 * 36, dtype=np.float32), atol=1e-6)
         np.testing.assert_allclose(action, np.zeros(29, dtype=np.float32), atol=1e-6)
 
 
@@ -245,7 +318,7 @@ def test_wbteleop_onnx_policy_uses_default_pose_mode_until_retarget_becomes_acti
             {"PicoRetargetTrackingBfmCtrl": {**ctrl, "state": "pause"}},
         )
         assert policy._hold_default_pose is True
-        np.testing.assert_allclose(obs[:29], np.asarray(default_pos, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(obs[:58], np.zeros(58, dtype=np.float32), atol=1e-6)
         np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
 
         obs, _ = policy.get_observation(
@@ -253,7 +326,7 @@ def test_wbteleop_onnx_policy_uses_default_pose_mode_until_retarget_becomes_acti
             {"PicoRetargetTrackingBfmCtrl": {**ctrl, "state": "active"}},
         )
         assert policy._hold_default_pose is True
-        np.testing.assert_allclose(obs[:29], np.asarray(default_pos, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(obs[:58], np.zeros(58, dtype=np.float32), atol=1e-6)
         np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
 
         policy.set_default_pose_mode(False)
@@ -289,7 +362,7 @@ def test_wbteleop_onnx_policy_holds_when_active_reference_is_incomplete() -> Non
         )
 
         assert policy._hold_default_pose is True
-        np.testing.assert_allclose(obs[:29], np.asarray(default_pos, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(obs[:58], np.zeros(58, dtype=np.float32), atol=1e-6)
         np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
 
 
@@ -320,7 +393,7 @@ def test_wbteleop_onnx_policy_holds_when_active_reference_is_non_finite() -> Non
 
         assert policy._hold_default_pose is True
         assert np.all(np.isfinite(obs))
-        np.testing.assert_allclose(obs[:29], np.asarray(default_pos, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(obs[:58], np.zeros(58, dtype=np.float32), atol=1e-6)
         np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
 
 

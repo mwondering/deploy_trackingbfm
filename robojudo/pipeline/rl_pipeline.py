@@ -309,7 +309,7 @@ class RlPipeline(Pipeline):
             return value.item()
         if isinstance(value, dict):
             return {str(key): RlPipeline._json_ready_debug_value(val) for key, val in value.items()}
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, list | tuple):
             return [RlPipeline._json_ready_debug_value(val) for val in value]
         return value
 
@@ -322,8 +322,14 @@ class RlPipeline(Pipeline):
         if self.timestep <= 0 or self.timestep % interval != 0:
             return
 
+        if hasattr(self.policy, "format_last_obs_debug_lines"):
+            lines = self.policy.format_last_obs_debug_lines()
+            logger.warning("WBTELEOP_OBS frame=%d\n%s", self.timestep, "\n".join(lines))
+            return
+
         if not hasattr(self.policy, "get_proprio_debug_terms"):
             return
+
         try:
             payload = self.policy.get_proprio_debug_terms(env_data)
         except Exception as exc:
@@ -440,6 +446,16 @@ class RlPipeline(Pipeline):
                 pd_target=pd_target,
                 timestep=self.timestep,
             )
+        debug_cfg = getattr(self.cfg, "debug", None)
+        if (
+            bool(getattr(debug_cfg, "wbteleop_proprio_debug", False))
+            and self._use_wbteleop_hold_policy
+            and hasattr(self.policy, "update_hold_debug_observation")
+        ):
+            try:
+                self.policy.update_hold_debug_observation(env_data)
+            except Exception as exc:
+                logger.warning("Failed to update wbteleop hold debug observation: %s", exc)
         self._maybe_log_wbteleop_proprio_debug(env_data)
 
     def step(self, dry_run=False):

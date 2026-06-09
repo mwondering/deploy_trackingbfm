@@ -226,6 +226,37 @@ def test_wbteleop_real_uses_hold_policy_only_in_default_pose_mode() -> None:
     assert pipeline._policy_for_step() is main_policy
 
 
+def test_wbteleop_hold_policy_updates_main_policy_debug_observation() -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_real())
+    pipeline.cfg.debug.wbteleop_proprio_debug = True
+    pipeline.cfg.debug.wbteleop_proprio_debug_interval = 50
+    pipeline._default_pose_mode_enabled = True
+    pipeline.ctrl_manager = types.SimpleNamespace(post_step_callback=lambda ctrl_data: None)
+    pipeline.visualizer = None
+    pipeline.do_safety_check = False
+    pipeline.timestep = 0
+    env_data = Box({"dof_pos": np.arange(29, dtype=np.float32) * 0.01})
+    calls = []
+
+    class _MainPolicy:
+        def update_hold_debug_observation(self, received_env_data):
+            calls.append(received_env_data)
+
+        def post_step_callback(self, commands):
+            del commands
+
+    pipeline.policy = _MainPolicy()
+    pipeline.hold_policy = types.SimpleNamespace(
+        post_step_callback=lambda commands: None,
+        debug_viz=lambda visualizer, env_data, ctrl_data, extras: None,
+    )
+    pipeline._active_policy_for_callback = pipeline.hold_policy
+
+    pipeline.post_step_callback(env_data, Box({"COMMANDS": []}), {}, np.zeros(29, dtype=np.float32))
+
+    assert calls == [env_data]
+
+
 def test_wbteleop_proprio_debug_logs_main_policy_payload_every_interval(monkeypatch) -> None:
     pipeline = _make_pipeline_shell(g1_wbteleop_real())
     pipeline.cfg.debug.wbteleop_proprio_debug = True

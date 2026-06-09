@@ -35,6 +35,11 @@ _WBTELEOP_TERM_DIMS = {
     "joint_vel": 29,
     "actions": 29,
 }
+_WBTELEOP_COMMAND_RELATED_TERMS = (
+    "command",
+    "ref_limb_ee_pose_b",
+    "motion_ref_ang_vel",
+)
 
 
 @policy_registry.register
@@ -84,6 +89,8 @@ class WbTeleopOnnxPolicy(Policy):
 
         self._load_obs_contract(Path(cfg_policy.policy_file), cfg_policy.env_yaml_path)
         self._default_ref_limb_ee_pose_b = self._build_default_ref_limb_pose_b()
+        self._last_obs_debug_terms: dict[str, np.ndarray] = {}
+        self._last_obs_debug_hold = True
         self.reset()
 
     def _load_obs_contract(self, onnx_path: Path, env_yaml_path: str | None) -> None:
@@ -114,6 +121,8 @@ class WbTeleopOnnxPolicy(Policy):
         self.last_action = np.zeros(self.action_dim, dtype=np.float32)
         self._default_pose_mode = False
         self._hold_default_pose = True
+        self._last_obs_debug_terms = {}
+        self._last_obs_debug_hold = True
         for buffer in self._term_buffers.values():
             buffer.clear()
 
@@ -121,12 +130,26 @@ class WbTeleopOnnxPolicy(Policy):
         for buffer in self._term_buffers.values():
             buffer.clear()
 
+    def _zero_command_debug_terms(self) -> None:
+        if not self._last_obs_debug_terms:
+            return
+
+        for term_name in _WBTELEOP_COMMAND_RELATED_TERMS:
+            if term_name not in self._term_buffers:
+                continue
+            self._last_obs_debug_terms[term_name] = np.zeros(
+                (self._term_buffers[term_name].maxlen, _WBTELEOP_TERM_DIMS[term_name]),
+                dtype=np.float32,
+            )
+
     def set_default_pose_mode(self, enabled: bool):
         was_holding = self._hold_default_pose
         self._default_pose_mode = bool(enabled)
         self._hold_default_pose = bool(enabled)
         if enabled:
             self.last_action = np.zeros(self.action_dim, dtype=np.float32)
+            self._last_obs_debug_hold = True
+            self._zero_command_debug_terms()
         elif was_holding:
             self._clear_term_history()
             self.last_action = np.zeros(self.action_dim, dtype=np.float32)
@@ -134,6 +157,15 @@ class WbTeleopOnnxPolicy(Policy):
     def post_step_callback(self, commands: list[str] | None = None):
         del commands
         return
+
+    def update_hold_debug_observation(self, env_data) -> None:
+        """Update debug-only wbteleop obs while an external hold policy is active."""
+        self._hold_default_pose = True
+        self.last_action = np.zeros(self.action_dim, dtype=np.float32)
+        current = self._current_terms(env_data, {"state": "idle"})
+        _, debug_terms = self._assemble_observation_from_terms(current)
+        self._last_obs_debug_terms = debug_terms
+        self._last_obs_debug_hold = True
 
     def _push_term_history(self, term_name: str, value: np.ndarray) -> np.ndarray:
         history = self._term_buffers[term_name]
@@ -143,6 +175,40 @@ class WbTeleopOnnxPolicy(Policy):
         while len(values) < history.maxlen:
             values.insert(0, values[0].copy())
         return np.concatenate(values[-history.maxlen :], dtype=np.float32)
+
+    @staticmethod
+    def _format_debug_array(value: np.ndarray) -> str:
+        array = np.asarray(value, dtype=np.float32).reshape(-1)
+        return np.array2string(
+            array,
+            precision=5,
+            suppress_small=False,
+            separator=",",
+            threshold=array.size + 1,
+            max_line_width=1_000_000,
+        ).replace("\n", " ")
+
+    def format_last_obs_debug_lines(self) -> list[str]:
+        """Return the last ONNX observation split by term, one compact line per term."""
+        if not self._last_obs_debug_terms:
+            return [f"hold={self._last_obs_debug_hold} obs_dim={self.obs_dim} unavailable=true"]
+
+        lines = [f"hold={self._last_obs_debug_hold} obs_dim={self.obs_dim}"]
+        for term_name in self.term_order:
+            history = self._last_obs_debug_terms.get(term_name)
+            if history is None:
+                continue
+            expected_dim = _WBTELEOP_TERM_DIMS[term_name]
+            history = np.asarray(history, dtype=np.float32).reshape(-1, expected_dim)
+            frames = [
+                f"h{history_idx}={self._format_debug_array(frame)}"
+                for history_idx, frame in enumerate(history)
+            ]
+            lines.append(
+                f"{term_name} history={history.shape[0]} dim={expected_dim} "
+                + " ".join(frames)
+            )
+        return lines
 
     def _build_default_ref_limb_pose_b(self) -> np.ndarray:
         term_cfg = self.term_cfgs.get("ref_limb_ee_pose_b", {})
@@ -269,14 +335,8 @@ class WbTeleopOnnxPolicy(Policy):
 
     def _current_terms(self, env_data, ctrl: dict[str, Any]) -> dict[str, np.ndarray]:
         if self._hold_default_pose:
-            command = np.concatenate(
-                [
-                    self.default_dof_pos.astype(np.float32),
-                    np.zeros(self.num_dofs, dtype=np.float32),
-                ],
-                dtype=np.float32,
-            )
-            ref_limb_ee_pose_b = self._default_ref_limb_ee_pose_b.copy()
+            command = np.zeros(_WBTELEOP_TERM_DIMS["command"], dtype=np.float32)
+            ref_limb_ee_pose_b = np.zeros(_WBTELEOP_TERM_DIMS["ref_limb_ee_pose_b"], dtype=np.float32)
             motion_ref_ang_vel = np.zeros(3, dtype=np.float32)
         else:
             command = np.asarray(ctrl.get("command", np.zeros(58, dtype=np.float32)), dtype=np.float32)
@@ -304,6 +364,25 @@ class WbTeleopOnnxPolicy(Policy):
         else:
             terms["robot_limb_ee_pose_b"] = self._fk_limb_pose_b(env_data, self.term_cfgs["robot_limb_ee_pose_b"])
         return terms
+
+    def _assemble_observation_from_terms(
+        self,
+        current: dict[str, np.ndarray],
+    ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        obs_parts = []
+        debug_terms: dict[str, np.ndarray] = {}
+        for term_name in self.term_order:
+            value = np.asarray(current[term_name], dtype=np.float32).reshape(-1)
+            expected_dim = _WBTELEOP_TERM_DIMS[term_name]
+            if value.shape[0] != expected_dim:
+                raise ValueError(
+                    f"wbteleop term '{term_name}' dimension mismatch: expected {expected_dim}, got {value.shape[0]}"
+                )
+            term_obs = self._push_term_history(term_name, value)
+            obs_parts.append(term_obs)
+            debug_terms[term_name] = term_obs.reshape(self._term_buffers[term_name].maxlen, expected_dim).copy()
+
+        return np.concatenate(obs_parts, dtype=np.float32), debug_terms
 
     def _has_active_reference(self, ctrl: dict[str, Any]) -> bool:
         if ctrl.get("state") != "active":
@@ -362,17 +441,7 @@ class WbTeleopOnnxPolicy(Policy):
             self.last_action = np.zeros(self.action_dim, dtype=np.float32)
         current = self._current_terms(env_data, ctrl)
 
-        obs_parts = []
-        for term_name in self.term_order:
-            value = np.asarray(current[term_name], dtype=np.float32).reshape(-1)
-            expected_dim = _WBTELEOP_TERM_DIMS[term_name]
-            if value.shape[0] != expected_dim:
-                raise ValueError(
-                    f"wbteleop term '{term_name}' dimension mismatch: expected {expected_dim}, got {value.shape[0]}"
-                )
-            obs_parts.append(self._push_term_history(term_name, value))
-
-        obs = np.concatenate(obs_parts, dtype=np.float32)
+        obs, debug_terms = self._assemble_observation_from_terms(current)
         if obs.shape[0] != self.obs_dim:
             raise ValueError(
                 f"assembled wbteleop observation dimension mismatch: expected {self.obs_dim}, got {obs.shape[0]}"
@@ -383,11 +452,9 @@ class WbTeleopOnnxPolicy(Policy):
             self.last_action = np.zeros(self.action_dim, dtype=np.float32)
             self._clear_term_history()
             current = self._current_terms(env_data, {"state": "idle"})
-            obs_parts = []
-            for term_name in self.term_order:
-                value = np.asarray(current[term_name], dtype=np.float32).reshape(-1)
-                obs_parts.append(self._push_term_history(term_name, value))
-            obs = np.concatenate(obs_parts, dtype=np.float32)
+            obs, debug_terms = self._assemble_observation_from_terms(current)
+        self._last_obs_debug_terms = debug_terms
+        self._last_obs_debug_hold = bool(self._hold_default_pose)
         return obs, {}
 
     def get_action(self, obs: np.ndarray) -> np.ndarray:
