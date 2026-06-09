@@ -211,8 +211,6 @@ class g1_wbteleop_real(RlPipelineCfg):
         dof=G1TrackingBfmSparseDoF(),
         born_place_align=False,
         limit_pd_target_effort=False,
-        clip_pd_target=True,
-        pd_target_max_delta=0.08,
     )
 
     ctrl: list[PicoRetargetTrackingBfmCtrlCfg] = [

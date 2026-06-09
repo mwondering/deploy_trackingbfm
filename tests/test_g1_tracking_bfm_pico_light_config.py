@@ -135,8 +135,8 @@ def test_g1_wbteleop_real_config_is_registered_for_dev_pc_dds() -> None:
     assert cfg.env.unitree.net_if == "eth0"
     assert cfg.env.born_place_align is False
     assert cfg.env.limit_pd_target_effort is False
-    assert cfg.env.clip_pd_target is True
-    assert cfg.env.pd_target_max_delta == 0.08
+    assert cfg.env.clip_pd_target is False
+    assert cfg.env.pd_target_max_delta is None
     assert cfg.env.dof.default_pos == G1TrackingBfmSparseDoF().default_pos
     assert cfg.env.dof.stiffness == G1TrackingBfmSparseDoF().stiffness
     assert cfg.env.dof.damping == G1TrackingBfmSparseDoF().damping
