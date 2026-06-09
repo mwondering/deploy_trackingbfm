@@ -203,6 +203,8 @@ class WbTeleopOnnxPolicy(Policy):
             )
         except KeyError:
             return np.zeros(_WBTELEOP_TERM_DIMS["robot_limb_ee_pose_b"], dtype=np.float32)
+        if not np.all(np.isfinite(body_pos_w)) or not np.all(np.isfinite(body_quat_w)):
+            return np.zeros(_WBTELEOP_TERM_DIMS["robot_limb_ee_pose_b"], dtype=np.float32)
 
         snapshot = RetargetMotionSnapshot(
             body_names=snapshot_body_names,
@@ -212,11 +214,14 @@ class WbTeleopOnnxPolicy(Policy):
             body_ang_vel_w=np.zeros((len(snapshot_body_names), 3), dtype=np.float32),
             timestamp_ns=0,
         )
-        return extract_limb_pose_b_from_snapshot(
+        limb_pose = extract_limb_pose_b_from_snapshot(
             snapshot,
             body_names=body_names,
             anchor_body_name=anchor_body_name,
         )
+        if not np.all(np.isfinite(limb_pose)):
+            return np.zeros(_WBTELEOP_TERM_DIMS["robot_limb_ee_pose_b"], dtype=np.float32)
+        return limb_pose
 
     def _current_terms(self, env_data, ctrl: dict[str, Any]) -> dict[str, np.ndarray]:
         if self._hold_default_pose:
@@ -263,17 +268,18 @@ class WbTeleopOnnxPolicy(Policy):
             value = ctrl.get(term_name)
             if value is None:
                 return False
-            if np.asarray(value, dtype=np.float32).reshape(-1).shape[0] != _WBTELEOP_TERM_DIMS[term_name]:
+            value = np.asarray(value, dtype=np.float32).reshape(-1)
+            if value.shape[0] != _WBTELEOP_TERM_DIMS[term_name]:
+                return False
+            if not np.all(np.isfinite(value)):
                 return False
         return True
 
     def _has_robot_limb_pose(self, env_data, ctrl: dict[str, Any]) -> bool:
         value = ctrl.get("robot_limb_ee_pose_b")
         if value is not None:
-            return (
-                np.asarray(value, dtype=np.float32).reshape(-1).shape[0]
-                == _WBTELEOP_TERM_DIMS["robot_limb_ee_pose_b"]
-            )
+            value = np.asarray(value, dtype=np.float32).reshape(-1)
+            return value.shape[0] == _WBTELEOP_TERM_DIMS["robot_limb_ee_pose_b"] and np.all(np.isfinite(value))
 
         fk_info = getattr(env_data, "fk_info", None)
         if fk_info is None:
@@ -286,6 +292,12 @@ class WbTeleopOnnxPolicy(Policy):
         for body_name in (anchor_body_name, *body_names):
             body_info = fk_info.get(body_name)
             if body_info is None or body_info.get("pos") is None or body_info.get("quat") is None:
+                return False
+            pos = np.asarray(body_info["pos"], dtype=np.float32).reshape(-1)
+            quat = np.asarray(body_info["quat"], dtype=np.float32).reshape(-1)
+            if pos.shape[0] != 3 or quat.shape[0] != 4:
+                return False
+            if not np.all(np.isfinite(pos)) or not np.all(np.isfinite(quat)):
                 return False
         return True
 
@@ -321,6 +333,17 @@ class WbTeleopOnnxPolicy(Policy):
             raise ValueError(
                 f"assembled wbteleop observation dimension mismatch: expected {self.obs_dim}, got {obs.shape[0]}"
             )
+        if not np.all(np.isfinite(obs)):
+            logger.warning("Non-finite wbteleop observation detected; holding default pose for this frame")
+            self._hold_default_pose = True
+            self.last_action = np.zeros(self.action_dim, dtype=np.float32)
+            self._clear_term_history()
+            current = self._current_terms(env_data, {"state": "idle"})
+            obs_parts = []
+            for term_name in self.term_order:
+                value = np.asarray(current[term_name], dtype=np.float32).reshape(-1)
+                obs_parts.append(self._push_term_history(term_name, value))
+            obs = np.concatenate(obs_parts, dtype=np.float32)
         return obs, {}
 
     def get_action(self, obs: np.ndarray) -> np.ndarray:

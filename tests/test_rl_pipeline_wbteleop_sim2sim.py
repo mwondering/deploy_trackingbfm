@@ -46,6 +46,13 @@ class _FakeMujocoEnv(_FakeEnv):
         self.updated = True
         self.dof_pos = self.data.qpos[-self.num_dofs :].astype(np.float32)
 
+    def get_data(self):
+        return Box({"dof_pos": self.dof_pos.copy()})
+
+    def step(self, pd_target, hand_pose=None):
+        del hand_pose
+        self.dof_pos = np.asarray(pd_target, dtype=np.float32)
+
 
 def _make_pipeline_shell(cfg):
     pipeline = RlPipeline.__new__(RlPipeline)
@@ -206,3 +213,73 @@ def test_wbteleop_real_config_does_not_switch_sim2sim_hold_gains() -> None:
     np.testing.assert_allclose(pipeline.env.stiffness, before.stiffness)
     np.testing.assert_allclose(pipeline.env.damping, before.damping)
     np.testing.assert_allclose(pipeline.env.torque_limits, before.torque_limits)
+
+
+def test_default_pose_prepare_ctrl_data_is_neutral_for_wbteleop_policy() -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_real())
+    pipeline.policy = types.SimpleNamespace(ctrl_type="PicoRetargetTrackingBfmCtrl")
+
+    ctrl_data = pipeline._default_pose_prepare_ctrl_data()
+
+    assert ctrl_data.COMMANDS == []
+    assert ctrl_data.PicoRetargetTrackingBfmCtrl.state == "idle"
+
+
+def test_wbteleop_blend_in_does_not_consume_pico_controller_state() -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_real())
+    pipeline.env = _FakeMujocoEnv()
+    pipeline.freq = 1
+    pipeline.dt = 0.0
+    pipeline._prepare_seconds = 1.0
+    pipeline._set_default_pose_mode = lambda enabled: None
+
+    class _Policy:
+        ctrl_type = "PicoRetargetTrackingBfmCtrl"
+
+        def set_default_pose_mode(self, enabled):
+            del enabled
+
+        def get_observation(self, env_data, ctrl_data):
+            del env_data
+            assert ctrl_data.PicoRetargetTrackingBfmCtrl.state == "idle"
+            assert ctrl_data.COMMANDS == []
+            return np.zeros(1, dtype=np.float32), {}
+
+        def get_pd_target(self, obs):
+            del obs
+            return np.ones(29, dtype=np.float32)
+
+    class _CtrlManager:
+        def get_ctrl_data(self, env_data):
+            del env_data
+            raise AssertionError("prepare blend-in must not read Pico controller state")
+
+    pipeline.policy = _Policy()
+    pipeline.ctrl_manager = _CtrlManager()
+    pipeline._init_dof_pos = np.zeros(29, dtype=np.float32)
+
+    pipeline._run_blend_in()
+
+    np.testing.assert_allclose(pipeline.env.dof_pos, np.zeros(29, dtype=np.float32))
+
+
+def test_prepare_ctrl_data_keeps_controller_path_for_non_default_pose_policy() -> None:
+    pipeline = _make_pipeline_shell(g1_tracking_bfm_pico_light_sim())
+    env_data = Box({})
+
+    class _CtrlManager:
+        def __init__(self):
+            self.calls = 0
+
+        def get_ctrl_data(self, received_env_data):
+            self.calls += 1
+            assert received_env_data is env_data
+            return Box({"COMMANDS": ["[MOTION_RESET]"]})
+
+    pipeline.policy = types.SimpleNamespace()
+    pipeline.ctrl_manager = _CtrlManager()
+
+    ctrl_data = pipeline._prepare_ctrl_data(env_data)
+
+    assert ctrl_data.COMMANDS == ["[MOTION_RESET]"]
+    assert pipeline.ctrl_manager.calls == 1

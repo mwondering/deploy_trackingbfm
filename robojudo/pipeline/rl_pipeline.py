@@ -249,6 +249,18 @@ class RlPipeline(Pipeline):
     def _policy_for_step(self):
         return self.hold_policy if self._use_wbteleop_hold_policy else self.policy
 
+    def _default_pose_prepare_ctrl_data(self):
+        ctrl_data = {"COMMANDS": []}
+        ctrl_type = getattr(self.policy, "ctrl_type", None)
+        if ctrl_type is not None:
+            ctrl_data[ctrl_type] = {"state": "idle"}
+        return Box(ctrl_data)
+
+    def _prepare_ctrl_data(self, env_data):
+        if self._has_default_pose_mode:
+            return self._default_pose_prepare_ctrl_data()
+        return self.ctrl_manager.get_ctrl_data(env_data)
+
     def _start_hold_to_policy_blend(self):
         if not self._use_wbteleop_hold_policy:
             return
@@ -475,7 +487,7 @@ class RlPipeline(Pipeline):
 
             self.env.update()
             env_data = self.env.get_data()
-            ctrl_data = self.ctrl_manager.get_ctrl_data(env_data)
+            ctrl_data = self._prepare_ctrl_data(env_data)
             obs, extras = self.policy.get_observation(env_data, ctrl_data)
             policy_pd = self.policy.get_pd_target(obs)
 
@@ -571,7 +583,7 @@ class RlPipeline(Pipeline):
             t_now = time.perf_counter()
             timings["prepare_env_get_data"] = t_now - t_last
             t_last = t_now
-            ctrl_data = self.ctrl_manager.get_ctrl_data(env_data)
+            ctrl_data = self._prepare_ctrl_data(env_data)
             t_now = time.perf_counter()
             timings["prepare_ctrl"] = t_now - t_last
             t_last = t_now

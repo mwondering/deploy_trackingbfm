@@ -71,6 +71,8 @@ def test_g1_tracking_bfm_pico_retarget_real_config_is_registered_for_dev_pc_dds(
     assert cfg.env.unitree.net_if == "eth0"
     assert cfg.env.born_place_align is False
     assert cfg.env.limit_pd_target_effort is False
+    assert cfg.env.clip_pd_target is False
+    assert cfg.env.pd_target_max_delta is None
     assert len(cfg.ctrl) == 1
     assert isinstance(cfg.ctrl[0], PicoRetargetTrackingBfmCtrlCfg)
     assert isinstance(cfg.policy, G1TrackingBfmSparseOnnxPolicyCfg)
@@ -133,6 +135,12 @@ def test_g1_wbteleop_real_config_is_registered_for_dev_pc_dds() -> None:
     assert cfg.env.unitree.net_if == "eth0"
     assert cfg.env.born_place_align is False
     assert cfg.env.limit_pd_target_effort is False
+    assert cfg.env.clip_pd_target is True
+    assert cfg.env.pd_target_max_delta == 0.08
+    assert cfg.env.dof.default_pos == G1TrackingBfmSparseDoF().default_pos
+    assert cfg.env.dof.stiffness == G1TrackingBfmSparseDoF().stiffness
+    assert cfg.env.dof.damping == G1TrackingBfmSparseDoF().damping
+    assert cfg.env.dof.torque_limits == G1TrackingBfmSparseDoF().torque_limits
     assert len(cfg.ctrl) == 1
     assert isinstance(cfg.ctrl[0], PicoRetargetTrackingBfmCtrlCfg)
     assert isinstance(cfg.policy, G1WbTeleopOnnxPolicyCfg)
@@ -149,7 +157,7 @@ def test_g1_wbteleop_real_config_is_registered_for_dev_pc_dds() -> None:
     assert cfg.policy.obs_group == "actor"
     assert cfg.policy.expected_obs_dim == 886
     assert cfg.do_safety_check is True
-    assert cfg.debug.log_obs is True
+    assert cfg.debug.log_obs is False
 
 
 def test_g1_tracking_bfm_sparse_policy_uses_knees_bent_default_pose() -> None:

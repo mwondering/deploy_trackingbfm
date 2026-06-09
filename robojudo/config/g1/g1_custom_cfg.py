@@ -202,14 +202,17 @@ class g1_wbteleop_real(RlPipelineCfg):
     """Dev PC Pico full-body retarget -> wbteleop ONNX -> real G1 through wired Unitree DDS."""
 
     robot: str = "g1"
-    debug: DebugCfg = DebugCfg(log_obs=True)
+    debug: DebugCfg = DebugCfg(log_obs=False, profile_timing=True, profile_interval=50)
     env: G1RealEnvCfg = G1RealEnvCfg(
         env_type="UnitreeCppEnv",
         unitree=G1UnitreeCfg(
             net_if=_DEV_PC_UNITREE_NET_IF,
         ),
+        dof=G1TrackingBfmSparseDoF(),
         born_place_align=False,
         limit_pd_target_effort=False,
+        clip_pd_target=True,
+        pd_target_max_delta=0.08,
     )
 
     ctrl: list[PicoRetargetTrackingBfmCtrlCfg] = [

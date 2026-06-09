@@ -7,8 +7,10 @@ import numpy as np
 import pytest
 from box import Box
 
+from robojudo.config.g1.g1_custom_cfg import g1_wbteleop_real, g1_wbteleop_sim2sim
 from robojudo.policy.policy_cfgs import TrackingBfmSparseOnnxPolicyCfg
 from robojudo.policy.wbteleop_onnx_policy import WbTeleopOnnxPolicy
+from robojudo.tools.kinematics import MujocoKinematics
 from robojudo.tools.tool_cfgs import DoFConfig
 
 _FAKE_ONNX_MODELS: dict[str, tuple[int, int]] = {}
@@ -263,6 +265,66 @@ def test_wbteleop_onnx_policy_holds_when_active_reference_is_incomplete() -> Non
         np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
 
 
+def test_wbteleop_onnx_policy_holds_when_active_reference_is_non_finite() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        default_pos = (np.arange(29, dtype=np.float32) * 0.03).tolist()
+        policy = _make_policy(str(onnx_path), str(env_yaml_path), default_pos=default_pos)
+        policy.set_default_pose_mode(False)
+        command = np.zeros(58, dtype=np.float32)
+        command[0] = np.nan
+
+        obs, _ = policy.get_observation(
+            _env_data(),
+            {
+                "PicoRetargetTrackingBfmCtrl": {
+                    "state": "active",
+                    "command": command,
+                    "ref_limb_ee_pose_b": np.zeros(36, dtype=np.float32),
+                    "motion_ref_ang_vel": np.zeros(3, dtype=np.float32),
+                }
+            },
+        )
+
+        assert policy._hold_default_pose is True
+        assert np.all(np.isfinite(obs))
+        np.testing.assert_allclose(obs[:29], np.asarray(default_pos, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
+
+
+def test_wbteleop_onnx_policy_holds_when_fk_limb_pose_is_non_finite() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        policy = _make_policy(str(onnx_path), str(env_yaml_path))
+        policy.set_default_pose_mode(False)
+        env_data = _env_data()
+        env_data.fk_info["left_wrist_yaw_link"]["pos"][0] = np.inf
+
+        obs, _ = policy.get_observation(
+            env_data,
+            {
+                "PicoRetargetTrackingBfmCtrl": {
+                    "state": "active",
+                    "command": np.zeros(58, dtype=np.float32),
+                    "ref_limb_ee_pose_b": np.zeros(36, dtype=np.float32),
+                    "motion_ref_ang_vel": np.zeros(3, dtype=np.float32),
+                }
+            },
+        )
+
+        assert policy._hold_default_pose is True
+        assert np.all(np.isfinite(obs))
+        np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
+
+
 def test_wbteleop_onnx_policy_resets_history_when_entering_active() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         onnx_path = Path(tmpdir) / "policy.onnx"
@@ -317,3 +379,48 @@ def test_wbteleop_onnx_policy_holds_when_robot_limb_pose_is_unavailable() -> Non
 
         assert policy._hold_default_pose is True
         np.testing.assert_allclose(policy.get_action(obs), np.zeros(29, dtype=np.float32), atol=1e-6)
+
+
+def test_wbteleop_robot_limb_pose_matches_between_sim_and_real_fk_configs() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        policy = _make_policy(str(onnx_path), str(env_yaml_path))
+        term_cfg = policy.term_cfgs["robot_limb_ee_pose_b"]
+
+        q = np.asarray(policy.default_dof_pos, dtype=np.float32).copy()
+        q += np.linspace(-0.03, 0.03, q.shape[0], dtype=np.float32)
+        base_pos = np.array([0.7, -0.4, 0.83], dtype=np.float32)
+        base_quat = np.array([0.08, -0.03, 0.21, 0.974], dtype=np.float32)
+        base_quat /= np.linalg.norm(base_quat)
+
+        def compute_pose(cfg_class):
+            cfg = cfg_class().env
+            kinematics = MujocoKinematics(cfg.forward_kinematic)
+            fk_info = kinematics.forward(
+                joint_pos=q,
+                base_pos=base_pos,
+                base_quat=base_quat,
+                base_ang_vel=np.zeros(3, dtype=np.float32),
+                base_lin_vel=np.zeros(3, dtype=np.float32),
+            )
+            env_data = Box(
+                {
+                    "fk_info": fk_info,
+                    "dof_pos": q,
+                    "dof_vel": np.zeros_like(q),
+                    "base_quat": base_quat,
+                    "base_ang_vel": np.zeros(3, dtype=np.float32),
+                }
+            )
+            return policy._fk_limb_pose_b(env_data, term_cfg)
+
+        sim_pose = compute_pose(g1_wbteleop_sim2sim)
+        real_pose = compute_pose(g1_wbteleop_real)
+
+        assert sim_pose.shape == (36,)
+        assert np.all(np.isfinite(sim_pose))
+        np.testing.assert_allclose(real_pose, sim_pose, atol=1e-7)
