@@ -170,6 +170,34 @@ def test_wbteleop_onnx_policy_assembles_yaml_ordered_886_dim_observation() -> No
         assert action.shape == (29,)
 
 
+def test_wbteleop_policy_reports_raw_and_computed_proprio_debug_terms() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path = Path(tmpdir) / "policy.onnx"
+        onnx_path.write_text("fake onnx")
+        _FAKE_ONNX_MODELS[str(onnx_path)] = (886, 29)
+        env_yaml_path = onnx_path.parent / "params" / "env.yaml"
+        _write_env_yaml(env_yaml_path)
+        policy = _make_policy(str(onnx_path), str(env_yaml_path))
+
+        debug = policy.get_proprio_debug_terms(_env_data())
+
+        assert set(debug.keys()) == {"raw_env_data", "computed_wbteleop_terms"}
+        raw = debug["raw_env_data"]
+        computed = debug["computed_wbteleop_terms"]
+        assert set(raw["fk_info"].keys()) == {
+            "pelvis",
+            "left_wrist_yaw_link",
+            "right_wrist_yaw_link",
+            "left_ankle_roll_link",
+            "right_ankle_roll_link",
+        }
+        np.testing.assert_allclose(raw["base_ang_vel"], [0.1, 0.2, 0.3], atol=1e-6)
+        assert computed["robot_limb_ee_pose_b"].shape == (36,)
+        assert computed["joint_pos"].shape == (29,)
+        assert computed["joint_vel"].shape == (29,)
+        np.testing.assert_allclose(computed["projected_gravity"], [0.0, 0.0, -1.0], atol=1e-6)
+
+
 def test_wbteleop_onnx_policy_holds_default_pose_when_retarget_controller_is_idle() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         onnx_path = Path(tmpdir) / "policy.onnx"

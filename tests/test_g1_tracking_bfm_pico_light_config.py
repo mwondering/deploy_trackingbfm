@@ -121,6 +121,8 @@ def test_g1_wbteleop_sim2sim_config_is_registered_for_0608_checkpoint() -> None:
     assert len(cfg.policy.action_scales) == cfg.policy.action_dof.num_dofs
     assert isinstance(cfg.hold_policy, G1UnitreeWoGaitPolicyCfg)
     assert cfg.hold_to_policy_blend_seconds == 0.75
+    assert cfg.debug.wbteleop_proprio_debug is True
+    assert cfg.debug.wbteleop_proprio_debug_interval == 50
     assert cfg.env.dof.default_pos == G1TrackingBfmSparseDoF().default_pos
     assert cfg.env.dof.stiffness == G1_29DoF().stiffness
     assert cfg.env.dof.damping == G1_29DoF().damping
@@ -146,6 +148,8 @@ def test_g1_wbteleop_real_config_is_registered_for_dev_pc_dds() -> None:
     assert isinstance(cfg.policy, G1WbTeleopOnnxPolicyCfg)
     assert cfg.policy.policy_type == "WbTeleopOnnxPolicy"
     assert cfg.policy.ctrl_type == "PicoRetargetTrackingBfmCtrl"
+    assert isinstance(cfg.hold_policy, G1UnitreeWoGaitPolicyCfg)
+    assert cfg.hold_to_policy_blend_seconds == 0.75
     assert cfg.policy.onnx_path == (
         "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
         "0608_ckpt_bcrl/deploy_model_16000.onnx"
@@ -156,6 +160,8 @@ def test_g1_wbteleop_real_config_is_registered_for_dev_pc_dds() -> None:
     )
     assert cfg.policy.obs_group == "actor"
     assert cfg.policy.expected_obs_dim == 886
+    assert cfg.debug.wbteleop_proprio_debug is True
+    assert cfg.debug.wbteleop_proprio_debug_interval == 50
     assert cfg.do_safety_check is True
     assert cfg.debug.log_obs is False
 

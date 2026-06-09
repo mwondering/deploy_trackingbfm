@@ -23,6 +23,12 @@ class DebugCfg(Config):
     profile_interval: int = 50
     """Number of frames to average before printing timing profile."""
 
+    wbteleop_proprio_debug: bool = False
+    """Print wbteleop raw env data and computed proprio terms for sim2real diagnosis."""
+
+    wbteleop_proprio_debug_interval: int = 50
+    """Number of frames between wbteleop proprio debug prints."""
+
 
 class DebugLogger:
     """

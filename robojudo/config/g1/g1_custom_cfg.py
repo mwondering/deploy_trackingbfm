@@ -173,7 +173,7 @@ class g1_wbteleop_sim2sim(RlPipelineCfg):
     """Pico full-body retarget -> wbteleop ONNX -> G1 MuJoCo sim2sim."""
 
     robot: str = "g1"
-    debug: DebugCfg = DebugCfg(log_obs=True)
+    debug: DebugCfg = DebugCfg(log_obs=True, wbteleop_proprio_debug=True, wbteleop_proprio_debug_interval=50)
     _deploy_dof = G1_29DoF()
     env: G1MujocoEnvCfg = G1MujocoEnvCfg(
         born_place_align=False,
@@ -202,7 +202,13 @@ class g1_wbteleop_real(RlPipelineCfg):
     """Dev PC Pico full-body retarget -> wbteleop ONNX -> real G1 through wired Unitree DDS."""
 
     robot: str = "g1"
-    debug: DebugCfg = DebugCfg(log_obs=False, profile_timing=True, profile_interval=50)
+    debug: DebugCfg = DebugCfg(
+        log_obs=False,
+        profile_timing=True,
+        profile_interval=50,
+        wbteleop_proprio_debug=True,
+        wbteleop_proprio_debug_interval=50,
+    )
     env: G1RealEnvCfg = G1RealEnvCfg(
         env_type="UnitreeCppEnv",
         unitree=G1UnitreeCfg(
@@ -220,4 +226,6 @@ class g1_wbteleop_real(RlPipelineCfg):
     policy: G1WbTeleopOnnxPolicyCfg = G1WbTeleopOnnxPolicyCfg(
         ctrl_type="PicoRetargetTrackingBfmCtrl",
     )
+    hold_policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
+    hold_to_policy_blend_seconds: float = 0.75
     do_safety_check: bool = True

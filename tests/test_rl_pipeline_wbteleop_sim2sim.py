@@ -198,21 +198,73 @@ def test_wbteleop_sim2sim_hold_to_policy_blend_starts_from_last_target() -> None
     assert np.all(blended < 1.0)
 
 
-def test_wbteleop_real_config_does_not_switch_sim2sim_hold_gains() -> None:
+def test_wbteleop_real_switches_to_hold_policy_gains() -> None:
     pipeline = _make_pipeline_shell(g1_wbteleop_real())
-    before = Box(
-        {
-            "stiffness": pipeline.env.stiffness.copy(),
-            "damping": pipeline.env.damping.copy(),
-            "torque_limits": pipeline.env.torque_limits.copy(),
-        }
-    )
+    pipeline.hold_policy = object()
+    pipeline._hold_stiffness = np.full(29, 33.0, dtype=np.float32)
+    pipeline._hold_damping = np.full(29, 3.3, dtype=np.float32)
+    pipeline._hold_torque_limits = np.full(29, 44.0, dtype=np.float32)
 
     pipeline._set_default_pose_hold_gains(True)
 
-    np.testing.assert_allclose(pipeline.env.stiffness, before.stiffness)
-    np.testing.assert_allclose(pipeline.env.damping, before.damping)
-    np.testing.assert_allclose(pipeline.env.torque_limits, before.torque_limits)
+    np.testing.assert_allclose(pipeline.env.stiffness, np.full(29, 33.0, dtype=np.float32))
+    np.testing.assert_allclose(pipeline.env.damping, np.full(29, 3.3, dtype=np.float32))
+    np.testing.assert_allclose(pipeline.env.torque_limits, np.full(29, 44.0, dtype=np.float32))
+
+
+def test_wbteleop_real_uses_hold_policy_only_in_default_pose_mode() -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_real())
+    main_policy = object()
+    hold_policy = object()
+    pipeline.policy = main_policy
+    pipeline.hold_policy = hold_policy
+
+    pipeline._default_pose_mode_enabled = True
+    assert pipeline._policy_for_step() is hold_policy
+
+    pipeline._default_pose_mode_enabled = False
+    assert pipeline._policy_for_step() is main_policy
+
+
+def test_wbteleop_proprio_debug_logs_main_policy_payload_every_interval(monkeypatch) -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_real())
+    pipeline.cfg.debug.wbteleop_proprio_debug = True
+    pipeline.cfg.debug.wbteleop_proprio_debug_interval = 50
+    env_data = Box({"dof_pos": np.zeros(29, dtype=np.float32)})
+    calls = []
+    messages = []
+
+    class _MainPolicy:
+        def get_proprio_debug_terms(self, received_env_data):
+            calls.append(received_env_data)
+            return {
+                "raw_env_data": {
+                    "dof_pos": np.array([1.0, 2.0], dtype=np.float32),
+                },
+                "computed_wbteleop_terms": {
+                    "projected_gravity": np.array([0.0, 0.0, -1.0], dtype=np.float32),
+                },
+            }
+
+    pipeline.policy = _MainPolicy()
+    monkeypatch.setattr(
+        "robojudo.pipeline.rl_pipeline.logger.warning",
+        lambda message, *args: messages.append(message % args),
+    )
+
+    pipeline.timestep = 49
+    pipeline._maybe_log_wbteleop_proprio_debug(env_data)
+    assert calls == []
+    assert messages == []
+
+    pipeline.timestep = 50
+    pipeline._maybe_log_wbteleop_proprio_debug(env_data)
+
+    assert calls == [env_data]
+    assert len(messages) == 1
+    assert '"raw_env_data"' in messages[0]
+    assert '"computed_wbteleop_terms"' in messages[0]
+    assert '"projected_gravity"' in messages[0]
 
 
 def test_default_pose_prepare_ctrl_data_is_neutral_for_wbteleop_policy() -> None:

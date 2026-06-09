@@ -223,6 +223,50 @@ class WbTeleopOnnxPolicy(Policy):
             return np.zeros(_WBTELEOP_TERM_DIMS["robot_limb_ee_pose_b"], dtype=np.float32)
         return limb_pose
 
+    def get_proprio_debug_terms(self, env_data) -> dict[str, dict[str, Any]]:
+        term_cfg = self.term_cfgs["robot_limb_ee_pose_b"]
+        params = term_cfg.get("params", {})
+        body_names = tuple(params.get("body_names", DEFAULT_WBTELEOP_LIMB_BODY_NAMES))
+        anchor_body_name = params.get("anchor_body_name", DEFAULT_WBTELEOP_LIMB_ANCHOR_BODY_NAME)
+        snapshot_body_names = (anchor_body_name, *body_names)
+
+        dof_pos = np.asarray(getattr(env_data, "dof_pos", np.zeros(self.num_dofs)), dtype=np.float32)
+        dof_vel = np.asarray(getattr(env_data, "dof_vel", np.zeros(self.num_dofs)), dtype=np.float32)
+        base_quat = np.asarray(
+            getattr(env_data, "base_quat", np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
+            dtype=np.float32,
+        )
+        base_ang_vel = np.asarray(getattr(env_data, "base_ang_vel", np.zeros(3)), dtype=np.float32)
+
+        raw_fk_info = {}
+        fk_info = getattr(env_data, "fk_info", None)
+        for body_name in snapshot_body_names:
+            body_info = fk_info.get(body_name) if fk_info is not None else None
+            if body_info is None:
+                raw_fk_info[body_name] = None
+                continue
+            raw_fk_info[body_name] = {
+                key: np.asarray(body_info[key], dtype=np.float32).copy()
+                for key in ("pos", "quat", "lin_vel", "ang_vel")
+                if key in body_info and body_info[key] is not None
+            }
+
+        return {
+            "raw_env_data": {
+                "dof_pos": dof_pos.copy(),
+                "dof_vel": dof_vel.copy(),
+                "base_quat": base_quat.copy(),
+                "base_ang_vel": base_ang_vel.copy(),
+                "fk_info": raw_fk_info,
+            },
+            "computed_wbteleop_terms": {
+                "projected_gravity": np.asarray(get_gravity_orientation(base_quat), dtype=np.float32),
+                "joint_pos": dof_pos.copy() - self.default_dof_pos.astype(np.float32),
+                "joint_vel": dof_vel.copy(),
+                "robot_limb_ee_pose_b": self._fk_limb_pose_b(env_data, term_cfg),
+            },
+        }
+
     def _current_terms(self, env_data, ctrl: dict[str, Any]) -> dict[str, np.ndarray]:
         if self._hold_default_pose:
             command = np.concatenate(

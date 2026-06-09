@@ -32,6 +32,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    # import pdb;pdb.set_trace()
     logger.info(f"Using config: {args.config}")
     config_manager = ConfigManager(config_name=args.config)
 

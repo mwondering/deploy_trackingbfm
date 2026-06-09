@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from collections import defaultdict
@@ -88,7 +89,7 @@ class RlPipeline(Pipeline):
 
         self.env.update_dof_cfg(override_cfg=self.policy.cfg_action_dof)
         self.hold_policy = None
-        if self._is_wbteleop_sim2sim:
+        if self._is_wbteleop_task:
             self._policy_stiffness = np.asarray(self.env.stiffness, dtype=np.float32).copy()
             self._policy_damping = np.asarray(self.env.damping, dtype=np.float32).copy()
             self._policy_torque_limits = np.asarray(self.env.torque_limits, dtype=np.float32).copy()
@@ -186,6 +187,10 @@ class RlPipeline(Pipeline):
             and bool(getattr(self.cfg.env, "is_sim", False))
         )
 
+    @property
+    def _is_wbteleop_task(self) -> bool:
+        return self.cfg.__class__.__name__ in {"g1_wbteleop_sim2sim", "g1_wbteleop_real"}
+
     def _set_wbteleop_sim2sim_default_qpos(self):
         if not self._is_wbteleop_sim2sim:
             return
@@ -211,7 +216,7 @@ class RlPipeline(Pipeline):
         self.env.update()
 
     def _set_default_pose_hold_gains(self, enabled: bool):
-        if not self._is_wbteleop_sim2sim:
+        if not self._is_wbteleop_task:
             return
 
         if enabled and self.hold_policy is not None:
@@ -240,11 +245,13 @@ class RlPipeline(Pipeline):
             )
 
         self.env.set_gains(stiffness, damping)
+        self.env.stiffness = stiffness
+        self.env.damping = damping
         self.env.torque_limits = torque_limits
 
     @property
     def _use_wbteleop_hold_policy(self) -> bool:
-        return self._is_wbteleop_sim2sim and self._default_pose_mode_enabled and self.hold_policy is not None
+        return self._is_wbteleop_task and self._default_pose_mode_enabled and self.hold_policy is not None
 
     def _policy_for_step(self):
         return self.hold_policy if self._use_wbteleop_hold_policy else self.policy
@@ -291,6 +298,43 @@ class RlPipeline(Pipeline):
         if self._hold_to_policy_blend_step >= self._hold_to_policy_blend_steps:
             self._hold_to_policy_blend_start = None
         return blended
+
+    @staticmethod
+    def _json_ready_debug_value(value):
+        if isinstance(value, np.ndarray):
+            if np.issubdtype(value.dtype, np.number):
+                return np.round(value.astype(np.float64), 6).tolist()
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, dict):
+            return {str(key): RlPipeline._json_ready_debug_value(val) for key, val in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [RlPipeline._json_ready_debug_value(val) for val in value]
+        return value
+
+    def _maybe_log_wbteleop_proprio_debug(self, env_data):
+        debug_cfg = getattr(self.cfg, "debug", None)
+        if not bool(getattr(debug_cfg, "wbteleop_proprio_debug", False)):
+            return
+
+        interval = max(1, int(getattr(debug_cfg, "wbteleop_proprio_debug_interval", 50) or 50))
+        if self.timestep <= 0 or self.timestep % interval != 0:
+            return
+
+        if not hasattr(self.policy, "get_proprio_debug_terms"):
+            return
+        try:
+            payload = self.policy.get_proprio_debug_terms(env_data)
+        except Exception as exc:
+            logger.warning("Failed to collect wbteleop proprio debug terms: %s", exc)
+            return
+
+        logger.warning(
+            "WBTELEOP_PROPRIO_OBS frame=%d\n%s",
+            self.timestep,
+            json.dumps(self._json_ready_debug_value(payload), indent=2, sort_keys=True),
+        )
 
     def reset(self):
         logger.info("Pipeline reset")
@@ -396,6 +440,7 @@ class RlPipeline(Pipeline):
                 pd_target=pd_target,
                 timestep=self.timestep,
             )
+        self._maybe_log_wbteleop_proprio_debug(env_data)
 
     def step(self, dry_run=False):
         timings = {}
