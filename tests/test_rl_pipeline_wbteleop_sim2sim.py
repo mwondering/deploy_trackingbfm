@@ -372,5 +372,5 @@ def test_prepare_ctrl_data_keeps_controller_path_for_non_default_pose_policy() -
 def test_npz_playback_real_prepare_hint_mentions_unitree_start_key() -> None:
     pipeline = _make_pipeline_shell(g1_wbteleop_npz_play_real())
 
-    assert "Unitree Y" in pipeline._default_pose_start_hint()
+    assert "Unitree Start" in pipeline._default_pose_start_hint()
     assert "replay" in pipeline._default_pose_start_hint()

@@ -200,7 +200,9 @@ def test_g1_wbteleop_npz_play_real_config_is_registered() -> None:
     assert cfg.env.dof.default_pos == G1TrackingBfmSparseDoF().default_pos
     assert len(cfg.ctrl) == 2
     assert isinstance(cfg.ctrl[0], UnitreeCtrlCfg)
-    assert cfg.ctrl[0].triggers["Y"] == "[MOTION_RESET]"
+    assert cfg.ctrl[0].triggers["Start"] == "[MOTION_RESET]"
+    assert cfg.ctrl[0].triggers["A"] == "[SHUTDOWN]"
+    assert cfg.ctrl[0].triggers["Y"] == "[SHUTDOWN]"
     assert cfg.ctrl[0].triggers["X"] == "[MOTION_FADE_IN]"
     assert cfg.ctrl[0].triggers["B"] == "[MOTION_FADE_OUT]"
     assert isinstance(cfg.ctrl[1], WbTeleopNpzPlaybackCtrlCfg)

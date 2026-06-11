@@ -200,7 +200,7 @@ class RlPipeline(Pipeline):
         ctrl_types = {getattr(cfg_ctrl, "ctrl_type", None) for cfg_ctrl in getattr(self.cfg, "ctrl", []) or []}
         if "WbTeleopNpzPlaybackCtrl" in ctrl_types:
             if "UnitreeCtrl" in ctrl_types:
-                return "press Unitree Y to start replay"
+                return "press Unitree Start to start replay"
             if "JoystickCtrl" in ctrl_types:
                 return "press joystick Y to start replay"
             if "KeyboardCtrl" in ctrl_types:

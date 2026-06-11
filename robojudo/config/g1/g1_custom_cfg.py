@@ -285,7 +285,15 @@ class g1_wbteleop_npz_play_real(RlPipelineCfg):
     )
 
     ctrl: list[UnitreeCtrlCfg | WbTeleopNpzPlaybackCtrlCfg] = [
-        UnitreeCtrlCfg(),
+        UnitreeCtrlCfg(
+            triggers={
+                "A": "[SHUTDOWN]",
+                "Y": "[SHUTDOWN]",
+                "Start": "[MOTION_RESET]",
+                "X": "[MOTION_FADE_IN]",
+                "B": "[MOTION_FADE_OUT]",
+            }
+        ),
         WbTeleopNpzPlaybackCtrlCfg(auto_start=False),
     ]
 
