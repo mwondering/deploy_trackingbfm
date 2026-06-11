@@ -284,8 +284,8 @@ class g1_wbteleop_npz_play_real(RlPipelineCfg):
         limit_pd_target_effort=False,
     )
 
-    ctrl: list[KeyboardCtrlCfg | WbTeleopNpzPlaybackCtrlCfg] = [
-        KeyboardCtrlCfg(),
+    ctrl: list[UnitreeCtrlCfg | WbTeleopNpzPlaybackCtrlCfg] = [
+        UnitreeCtrlCfg(),
         WbTeleopNpzPlaybackCtrlCfg(auto_start=False),
     ]
 

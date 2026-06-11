@@ -197,9 +197,15 @@ class RlPipeline(Pipeline):
         }
 
     def _default_pose_start_hint(self) -> str:
-        for cfg_ctrl in getattr(self.cfg, "ctrl", []) or []:
-            if getattr(cfg_ctrl, "ctrl_type", None) == "WbTeleopNpzPlaybackCtrl":
+        ctrl_types = {getattr(cfg_ctrl, "ctrl_type", None) for cfg_ctrl in getattr(self.cfg, "ctrl", []) or []}
+        if "WbTeleopNpzPlaybackCtrl" in ctrl_types:
+            if "UnitreeCtrl" in ctrl_types:
+                return "press Unitree Y to start replay"
+            if "JoystickCtrl" in ctrl_types:
+                return "press joystick Y to start replay"
+            if "KeyboardCtrl" in ctrl_types:
                 return "press | to start replay"
+            return "send [MOTION_RESET] to start replay"
         return "press R to start motion"
 
     def _set_wbteleop_sim2sim_default_qpos(self):
