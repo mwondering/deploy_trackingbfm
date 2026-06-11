@@ -103,7 +103,16 @@ class WbTeleopRetargetCommandExtractor:
             raise ValueError("wbteleop command extraction requires retarget snapshot.qpos.")
 
         joint_pos = self._joint_pos_from_qpos(snapshot.qpos)
-        joint_vel = self._joint_vel(joint_pos, int(snapshot.timestamp_ns))
+        if snapshot.joint_vel is not None:
+            joint_vel = np.asarray(snapshot.joint_vel, dtype=np.float32).reshape(-1)
+            if joint_vel.shape[0] != self.joint_dof:
+                raise ValueError(
+                    f"retarget joint_vel has {joint_vel.shape[0]} values, expected {self.joint_dof}"
+                )
+            self._last_joint_pos = joint_pos.copy()
+            self._last_timestamp_ns = int(snapshot.timestamp_ns)
+        else:
+            joint_vel = self._joint_vel(joint_pos, int(snapshot.timestamp_ns))
         command_anchor_idx = _body_index(snapshot, self.command_anchor_body_name)
 
         return {

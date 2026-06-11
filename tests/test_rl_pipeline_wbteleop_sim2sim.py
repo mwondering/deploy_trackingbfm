@@ -9,6 +9,7 @@ from box import Box
 from robojudo.config.g1.g1_custom_cfg import (
     G1TrackingBfmSparseDoF,
     g1_tracking_bfm_pico_light_sim,
+    g1_wbteleop_npz_play_real,
     g1_wbteleop_real,
     g1_wbteleop_sim2sim,
 )
@@ -366,3 +367,10 @@ def test_prepare_ctrl_data_keeps_controller_path_for_non_default_pose_policy() -
 
     assert ctrl_data.COMMANDS == ["[MOTION_RESET]"]
     assert pipeline.ctrl_manager.calls == 1
+
+
+def test_npz_playback_prepare_hint_mentions_keyboard_start_key() -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_npz_play_real())
+
+    assert "|" in pipeline._default_pose_start_hint()
+    assert "replay" in pipeline._default_pose_start_hint()

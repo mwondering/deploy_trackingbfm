@@ -4,6 +4,7 @@
   <!-- <option timestep='0.001' iterations='50' solver='PGS' gravity='0 0 -9.81'></option> -->
   <default>
     <joint damping="0.001" armature="0.01" frictionloss="0.1"/>
+
   </default>
 
   <asset>
@@ -293,7 +294,7 @@
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
   </asset>
   <worldbody>
-    <light pos="1 0 3.5" dir="0 0 -1" directional="true"/>
-    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+    <light pos="10 0 3.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="2 0.005 0.0001"/>
   </worldbody>
 </mujoco>

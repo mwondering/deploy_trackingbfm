@@ -6,7 +6,6 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-
 DEFAULT_ANCHOR_BODY_NAME = "pelvis"
 DEFAULT_EE_BODY_NAMES = ("left_wrist_yaw_link", "right_wrist_yaw_link")
 DEFAULT_SPARSE_ANCHOR_HEIGHT_W = 0.793
@@ -44,6 +43,7 @@ class RetargetMotionSnapshot:
     body_ang_vel_w: np.ndarray
     timestamp_ns: int
     qpos: np.ndarray | None = None
+    joint_vel: np.ndarray | None = None
 
 
 def quat_wxyz_to_xyzw(quat_wxyz: np.ndarray) -> np.ndarray:
@@ -76,7 +76,9 @@ def _relative_pose_wxyz(
 ) -> tuple[np.ndarray, np.ndarray]:
     anchor_rot = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_w))
     body_rot = R.from_quat(quat_wxyz_to_xyzw(body_quat_w))
-    pos_b = anchor_rot.inv().apply(np.asarray(body_pos_w, dtype=np.float32) - np.asarray(anchor_pos_w, dtype=np.float32))
+    pos_b = anchor_rot.inv().apply(
+        np.asarray(body_pos_w, dtype=np.float32) - np.asarray(anchor_pos_w, dtype=np.float32)
+    )
     quat_b = quat_xyzw_to_wxyz((anchor_rot.inv() * body_rot).as_quat())
     return pos_b.astype(np.float32), quat_b.astype(np.float32)
 

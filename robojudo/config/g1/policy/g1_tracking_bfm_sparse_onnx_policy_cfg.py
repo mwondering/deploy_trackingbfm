@@ -23,14 +23,14 @@ _DEFAULT_WBTELEOP_ONNX = os.environ.get(
     (
         "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
         # "0608_ckpt_bcrl/deploy_model_16000.onnx"
-        "0608_ckpt_bcrl/deploy_model_16000.onnx"
+        "0611_ckpt/deploy_model_23000.onnx"
     ),
 )
 _DEFAULT_WBTELEOP_ENV_YAML = os.environ.get(
     "ROBOJUDO_WBTELEOP_ENV_YAML",
     (
         "/home/lenovo/workspace/UNICTL/tracking_bfm/logs/rsl_rl/"
-        "0608_ckpt_bcrl/params/env.yaml"
+        "0611_ckpt/params/env.yaml"
         # "0608_ckpt_bcrl/params/env.yaml"
     ),
 )

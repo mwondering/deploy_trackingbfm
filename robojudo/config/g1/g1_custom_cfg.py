@@ -8,6 +8,7 @@ from robojudo.controller.ctrl_cfgs import (
     PicoLightSparseCtrlCfg,  # noqa: F401
     PicoRetargetTrackingBfmCtrlCfg,  # noqa: F401
     UnitreeCtrlCfg,  # noqa: F401
+    WbTeleopNpzPlaybackCtrlCfg,  # noqa: F401
 )
 from robojudo.pipeline.pipeline_cfgs import (
     RlLocoMimicPipelineCfg,  # noqa: F401
@@ -225,6 +226,71 @@ class g1_wbteleop_real(RlPipelineCfg):
 
     policy: G1WbTeleopOnnxPolicyCfg = G1WbTeleopOnnxPolicyCfg(
         ctrl_type="PicoRetargetTrackingBfmCtrl",
+    )
+    hold_policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
+    hold_to_policy_blend_seconds: float = 0.75
+    do_safety_check: bool = True
+
+
+@cfg_registry.register
+class g1_wbteleop_npz_play_sim2sim(RlPipelineCfg):
+    """NPZ reference motion playback -> wbteleop ONNX -> G1 MuJoCo sim2sim."""
+
+    robot: str = "g1"
+    debug: DebugCfg = DebugCfg(log_obs=True, wbteleop_proprio_debug=True, wbteleop_proprio_debug_interval=50)
+    _deploy_dof = G1_29DoF()
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg(
+        born_place_align=False,
+        random_heading=False,
+        dof=G1TrackingBfmSparseDoF(
+            stiffness=_deploy_dof.stiffness,
+            damping=_deploy_dof.damping,
+            torque_limits=_deploy_dof.torque_limits,
+        ),
+    )
+
+    ctrl: list[KeyboardCtrlCfg | WbTeleopNpzPlaybackCtrlCfg] = [
+        KeyboardCtrlCfg(),
+        WbTeleopNpzPlaybackCtrlCfg(auto_start=False),
+    ]
+
+    policy: G1WbTeleopOnnxPolicyCfg = G1WbTeleopOnnxPolicyCfg(
+        ctrl_type="WbTeleopNpzPlaybackCtrl",
+    )
+    hold_policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
+    hold_to_policy_blend_seconds: float = 0.75
+    wbteleop_default_base_height: float | None = 0.76
+
+
+@cfg_registry.register
+class g1_wbteleop_npz_play_real(RlPipelineCfg):
+    """NPZ reference motion playback -> wbteleop ONNX -> real G1 through wired Unitree DDS."""
+
+    robot: str = "g1"
+    debug: DebugCfg = DebugCfg(
+        log_obs=False,
+        profile_timing=True,
+        profile_interval=50,
+        wbteleop_proprio_debug=True,
+        wbteleop_proprio_debug_interval=50,
+    )
+    env: G1RealEnvCfg = G1RealEnvCfg(
+        env_type="UnitreeCppEnv",
+        unitree=G1UnitreeCfg(
+            net_if=_DEV_PC_UNITREE_NET_IF,
+        ),
+        dof=G1TrackingBfmSparseDoF(),
+        born_place_align=False,
+        limit_pd_target_effort=False,
+    )
+
+    ctrl: list[KeyboardCtrlCfg | WbTeleopNpzPlaybackCtrlCfg] = [
+        KeyboardCtrlCfg(),
+        WbTeleopNpzPlaybackCtrlCfg(auto_start=False),
+    ]
+
+    policy: G1WbTeleopOnnxPolicyCfg = G1WbTeleopOnnxPolicyCfg(
+        ctrl_type="WbTeleopNpzPlaybackCtrl",
     )
     hold_policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
     hold_to_policy_blend_seconds: float = 0.75

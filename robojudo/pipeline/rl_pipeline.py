@@ -183,13 +183,24 @@ class RlPipeline(Pipeline):
     @property
     def _is_wbteleop_sim2sim(self) -> bool:
         return (
-            self.cfg.__class__.__name__ == "g1_wbteleop_sim2sim"
+            self.cfg.__class__.__name__ in {"g1_wbteleop_sim2sim", "g1_wbteleop_npz_play_sim2sim"}
             and bool(getattr(self.cfg.env, "is_sim", False))
         )
 
     @property
     def _is_wbteleop_task(self) -> bool:
-        return self.cfg.__class__.__name__ in {"g1_wbteleop_sim2sim", "g1_wbteleop_real"}
+        return self.cfg.__class__.__name__ in {
+            "g1_wbteleop_sim2sim",
+            "g1_wbteleop_real",
+            "g1_wbteleop_npz_play_sim2sim",
+            "g1_wbteleop_npz_play_real",
+        }
+
+    def _default_pose_start_hint(self) -> str:
+        for cfg_ctrl in getattr(self.cfg, "ctrl", []) or []:
+            if getattr(cfg_ctrl, "ctrl_type", None) == "WbTeleopNpzPlaybackCtrl":
+                return "press | to start replay"
+        return "press R to start motion"
 
     def _set_wbteleop_sim2sim_default_qpos(self):
         if not self._is_wbteleop_sim2sim:
@@ -676,10 +687,10 @@ class RlPipeline(Pipeline):
             pbar.update()
         pbar.close()
 
-        # ── Phase 3: Hold default pose — wait for R to start motion ──
+        # ── Phase 3: Hold default pose — wait for user start command ──
         # Stay in default-pose mode. Motion starts when [MOTION_RESET] is
-        # received (user presses R), which calls _set_default_pose_mode(False).
-        logger.warning("prepare done — holding default pose, press R to start motion")
+        # received, which calls _set_default_pose_mode(False).
+        logger.warning(f"prepare done — holding default pose, {self._default_pose_start_hint()}")
 
 
 if __name__ == "__main__":

@@ -283,3 +283,12 @@ class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
         "LeftController.key_one": "[SHUTDOWN]",
         "LeftController.axis_click": "[SHUTDOWN]",
     }
+
+
+class WbTeleopNpzPlaybackCtrlCfg(CtrlCfg):
+    ctrl_type: str = "WbTeleopNpzPlaybackCtrl"
+
+    motion_file: str = ""
+    motion_type: str = "isaaclab"
+    loop: bool = False
+    auto_start: bool = False
