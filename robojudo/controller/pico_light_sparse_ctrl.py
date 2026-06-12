@@ -13,6 +13,7 @@ from robojudo.controller.pico_retarget_tracking_bfm_ctrl import (
     _make_real_snapshot_builder,
     _make_real_streamer,
 )
+from robojudo.controller.utils.latest_output_worker import LatestOutputWorker
 from robojudo.tools.tracking_bfm_sparse_command import extract_tracking_bfm_sparse_command
 
 
@@ -98,7 +99,7 @@ def _axis_pair(controller_data, controller_name: str) -> tuple[float, float]:
     controller = _controller(controller_data, controller_name)
     for key in ("axis", "joystick", "stick", "thumbstick", "primary2DAxis"):
         value = controller.get(key)
-        if isinstance(value, (list, tuple, np.ndarray)) and len(value) >= 2:
+        if isinstance(value, list | tuple | np.ndarray) and len(value) >= 2:
             return float(value[0]), float(value[1])
     x = controller.get("axis_x", controller.get("x", 0.0))
     y = controller.get("axis_y", controller.get("y", 0.0))
@@ -128,20 +129,33 @@ def _retarget_ee_pose(
     snapshot_builder,
     smplx_data,
     timestamp_ns: int,
+    timings: dict[str, float] | None = None,
 ) -> np.ndarray:
+    t_last = time.perf_counter()
     qpos = np.asarray(
         retarget.retarget(smplx_data, offset_to_ground=cfg.offset_to_ground),
         dtype=np.float32,
     ).copy()
+    t_now = time.perf_counter()
+    if timings is not None:
+        timings["retarget"] = (t_now - t_last) * 1000.0
+    t_last = t_now
     if qpos.shape[0] >= 3:
         qpos[2] += float(cfg.root_z_offset)
 
     snapshot = snapshot_builder.build(qpos, timestamp_ns=timestamp_ns)
+    t_now = time.perf_counter()
+    if timings is not None:
+        timings["snapshot"] = (t_now - t_last) * 1000.0
+    t_last = t_now
     command = extract_tracking_bfm_sparse_command(
         snapshot,
         anchor_body_name=cfg.anchor_body_name,
         ee_body_names=(cfg.left_ee_body_name, cfg.right_ee_body_name),
     )
+    t_now = time.perf_counter()
+    if timings is not None:
+        timings["sparse_extract"] = (t_now - t_last) * 1000.0
     return np.asarray(command["ee_pose"], dtype=np.float32).copy()
 
 
@@ -153,7 +167,17 @@ class _RetargetPicoReader:
         self.snapshot_builder = snapshot_builder or _make_real_snapshot_builder(cfg)
 
     def read(self) -> dict[str, Any]:
-        smplx_data, _left_hand_data, _right_hand_data, controller_data, _headset_data = self.streamer.get_current_frame()
+        timings: dict[str, float] = {}
+        t_last = time.perf_counter()
+        (
+            smplx_data,
+            _left_hand_data,
+            _right_hand_data,
+            controller_data,
+            _headset_data,
+        ) = self.streamer.get_current_frame()
+        t_now = time.perf_counter()
+        timings["pico_read"] = (t_now - t_last) * 1000.0
         timestamp_ns = _timestamp_ns(controller_data)
         retarget_ee_pose = None
         if smplx_data is not None:
@@ -163,6 +187,7 @@ class _RetargetPicoReader:
                 self.snapshot_builder,
                 smplx_data,
                 timestamp_ns,
+                timings,
             )
 
         return {
@@ -183,6 +208,7 @@ class _RetargetPicoReader:
             "left_axis_click": _button(controller_data, "LeftController", "axis_click", "axisClick"),
             "right_axis_click": _button(controller_data, "RightController", "axis_click", "axisClick"),
             "_retarget_ee_pose": retarget_ee_pose,
+            "_profile_timings": timings,
         }
 
 @ctrl_registry.register
@@ -203,7 +229,18 @@ class PicoLightSparseCtrl(Controller):
         else:
             self._sdk_reader = sdk_reader or _PicoSdkReader()
         self._ee_pose_source = ee_pose_source
+        self._async_worker = None
         self.reset()
+        if self.cfg_ctrl.async_read:
+            self._async_worker = LatestOutputWorker(
+                name="PicoLightSparseCtrlWorker",
+                producer=self._get_data_sync,
+                initial_output=self._last_output,
+                sleep_s=self.cfg_ctrl.async_worker_sleep_s,
+                profile_enabled=self.cfg_ctrl.async_profile,
+                profile_interval=self.cfg_ctrl.async_profile_interval,
+            )
+            self._async_worker.start()
 
     def reset(self):
         self.state = "idle"
@@ -221,6 +258,8 @@ class PicoLightSparseCtrl(Controller):
         self._anchor_right_quat_robot = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
         self._last_output = self._neutral_output(commands=[])
+        if self._async_worker is not None:
+            self._async_worker.reset(self._last_output)
 
     def _ee_pose_from_delta(
         self,
@@ -322,7 +361,14 @@ class PicoLightSparseCtrl(Controller):
 
         return commands
 
-    def _active_output(self, frame: dict[str, Any], dt: float, commands: list[str]) -> dict[str, Any]:
+    def _active_output(
+        self,
+        frame: dict[str, Any],
+        dt: float,
+        commands: list[str],
+        timings: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        t_start = time.perf_counter()
         left_axis = frame["left_axis"]
         right_axis = frame["right_axis"]
         lx = _deadzone(float(left_axis[0]), self.cfg_ctrl.stick_deadzone)
@@ -352,13 +398,22 @@ class PicoLightSparseCtrl(Controller):
         retarget_ee_pose = frame.get("_retarget_ee_pose")
         if retarget_ee_pose is not None:
             ee_pose = np.asarray(retarget_ee_pose, dtype=np.float32).copy()
+            if timings is not None:
+                timings["ee_pose_select"] = 0.0
         elif self._ee_pose_source is not None:
+            t_last = time.perf_counter()
             ee_pose = self._ee_pose_source.get_ee_pose(int(frame["timestamp_ns"]))
+            t_now = time.perf_counter()
+            if timings is not None:
+                timings["ee_pose_source"] = (t_now - t_last) * 1000.0
             if ee_pose is None:
                 ee_pose = np.asarray(self._last_output["ee_pose"], dtype=np.float32).copy()
         elif self.cfg_ctrl.retarget_ee_pose:
             ee_pose = np.asarray(self._last_output["ee_pose"], dtype=np.float32).copy()
+            if timings is not None:
+                timings["ee_pose_fallback"] = 0.0
         else:
+            t_last = time.perf_counter()
             left_robot = _unity_pos_to_robot(frame["left_pos"])
             right_robot = _unity_pos_to_robot(frame["right_pos"])
             left_quat_robot = _unity_quat_to_robot_xyzw(frame["left_quat"])
@@ -373,6 +428,12 @@ class PicoLightSparseCtrl(Controller):
                 left_relative_quat=left_relative_quat,
                 right_relative_quat=right_relative_quat,
             )
+            t_now = time.perf_counter()
+            if timings is not None:
+                timings["delta_mapping"] = (t_now - t_last) * 1000.0
+
+        if timings is not None:
+            timings["active_output"] = (time.perf_counter() - t_start) * 1000.0
 
         return {
             "ee_pose": ee_pose,
@@ -384,13 +445,21 @@ class PicoLightSparseCtrl(Controller):
             "_commands": commands,
         }
 
-    def get_data(self):
+    def _get_data_sync(self):
+        timings: dict[str, float] = {}
+        t_last = time.perf_counter()
         frame = self._sdk_reader.read()
+        t_now = time.perf_counter()
+        timings.update(frame.pop("_profile_timings", {}))
+        timings.setdefault("pico_read", (t_now - t_last) * 1000.0)
+        t_last = t_now
         dt = self._dt(int(frame["timestamp_ns"]))
         commands = self._step_state_machine(frame)
+        t_now = time.perf_counter()
+        timings["state_machine"] = (t_now - t_last) * 1000.0
 
         if self.state == "active":
-            self._last_output = self._active_output(frame, dt, commands)
+            self._last_output = self._active_output(frame, dt, commands, timings)
         elif self.state == "idle":
             self._last_output = self._neutral_output(commands=commands)
         else:
@@ -398,8 +467,14 @@ class PicoLightSparseCtrl(Controller):
             self._last_output["state"] = self.state
             self._last_output["timestamp_ns"] = frame["timestamp_ns"]
             self._last_output["_commands"] = commands
+        self._last_output["_profile_timings"] = dict(timings)
 
         return dict(self._last_output)
+
+    def get_data(self):
+        if self._async_worker is not None:
+            return self._async_worker.get_data()
+        return self._get_data_sync()
 
     def process_triggers(self, ctrl_data):
         commands = list(ctrl_data.pop("_commands", []))

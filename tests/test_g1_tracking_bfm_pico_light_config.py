@@ -124,8 +124,10 @@ def test_g1_wbteleop_sim2sim_config_is_registered_for_0608_checkpoint() -> None:
     assert len(cfg.policy.action_scales) == cfg.policy.action_dof.num_dofs
     assert isinstance(cfg.hold_policy, G1UnitreeWoGaitPolicyCfg)
     assert cfg.hold_to_policy_blend_seconds == 0.75
-    assert cfg.debug.wbteleop_proprio_debug is True
-    assert cfg.debug.wbteleop_proprio_debug_interval == 50
+    assert cfg.debug.log_obs is False
+    assert cfg.debug.profile_timing is True
+    assert cfg.debug.profile_interval == 50
+    assert cfg.debug.wbteleop_proprio_debug is False
     assert cfg.env.dof.default_pos == G1TrackingBfmSparseDoF().default_pos
     assert cfg.env.dof.stiffness == G1_29DoF().stiffness
     assert cfg.env.dof.damping == G1_29DoF().damping
@@ -163,8 +165,9 @@ def test_g1_wbteleop_real_config_is_registered_for_dev_pc_dds() -> None:
     )
     assert cfg.policy.obs_group == "actor"
     assert cfg.policy.expected_obs_dim == 886
-    assert cfg.debug.wbteleop_proprio_debug is True
-    assert cfg.debug.wbteleop_proprio_debug_interval == 50
+    assert cfg.debug.profile_timing is True
+    assert cfg.debug.profile_interval == 50
+    assert cfg.debug.wbteleop_proprio_debug is False
     assert cfg.do_safety_check is True
     assert cfg.debug.log_obs is False
 
@@ -185,6 +188,10 @@ def test_g1_wbteleop_npz_play_sim2sim_config_is_registered() -> None:
     assert cfg.policy.ctrl_type == "WbTeleopNpzPlaybackCtrl"
     assert isinstance(cfg.hold_policy, G1UnitreeWoGaitPolicyCfg)
     assert cfg.wbteleop_default_base_height == 0.76
+    assert cfg.debug.log_obs is False
+    assert cfg.debug.profile_timing is True
+    assert cfg.debug.profile_interval == 50
+    assert cfg.debug.wbteleop_proprio_debug is False
 
 
 def test_g1_wbteleop_npz_play_real_config_is_registered() -> None:
@@ -211,6 +218,10 @@ def test_g1_wbteleop_npz_play_real_config_is_registered() -> None:
     assert cfg.policy.ctrl_type == "WbTeleopNpzPlaybackCtrl"
     assert isinstance(cfg.hold_policy, G1UnitreeWoGaitPolicyCfg)
     assert cfg.do_safety_check is True
+    assert cfg.debug.log_obs is False
+    assert cfg.debug.profile_timing is True
+    assert cfg.debug.profile_interval == 50
+    assert cfg.debug.wbteleop_proprio_debug is False
 
 
 def test_g1_tracking_bfm_sparse_policy_uses_knees_bent_default_pose() -> None:

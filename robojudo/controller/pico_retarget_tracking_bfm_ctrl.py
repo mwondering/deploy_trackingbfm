@@ -7,6 +7,7 @@ import numpy as np
 
 from robojudo.controller import Controller, ctrl_registry
 from robojudo.controller.ctrl_cfgs import PicoRetargetTrackingBfmCtrlCfg
+from robojudo.controller.utils.latest_output_worker import LatestOutputWorker
 from robojudo.tools.tracking_bfm_sparse_command import (
     DEFAULT_SPARSE_ANCHOR_HEIGHT_W,
     DEFAULT_SPARSE_EE_POSE,
@@ -81,7 +82,18 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         self.retarget = retarget or _make_real_retarget(cfg_ctrl)
         self.snapshot_builder = snapshot_builder or _make_real_snapshot_builder(cfg_ctrl)
         self.wbteleop_extractor = WbTeleopRetargetCommandExtractor(joint_dof=29)
+        self._async_worker = None
         self.reset()
+        if self.cfg_ctrl.async_read:
+            self._async_worker = LatestOutputWorker(
+                name="PicoRetargetTrackingBfmCtrlWorker",
+                producer=self._get_data_sync,
+                initial_output=self._last_output,
+                sleep_s=self.cfg_ctrl.async_worker_sleep_s,
+                profile_enabled=self.cfg_ctrl.async_profile,
+                profile_interval=self.cfg_ctrl.async_profile_interval,
+            )
+            self._async_worker.start()
 
     def reset(self):
         self.state = "idle"
@@ -91,6 +103,8 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         self._pending_motion_reset = False
         self.wbteleop_extractor.reset()
         self._last_output = self._neutral_output([])
+        if self._async_worker is not None:
+            self._async_worker.reset(self._last_output)
 
     def _neutral_output(self, commands: list[str]) -> dict[str, Any]:
         return {
@@ -142,29 +156,53 @@ class PicoRetargetTrackingBfmCtrl(Controller):
 
         return commands
 
-    def _active_output(self, smplx_data, timestamp_ns: int, commands: list[str]) -> dict[str, Any]:
+    def _active_output(
+        self,
+        smplx_data,
+        timestamp_ns: int,
+        commands: list[str],
+        timings: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        t_last = time.perf_counter()
         qpos = np.asarray(
             self.retarget.retarget(smplx_data, offset_to_ground=self.cfg_ctrl.offset_to_ground),
             dtype=np.float32,
         ).copy()
+        t_now = time.perf_counter()
+        if timings is not None:
+            timings["retarget"] = (t_now - t_last) * 1000.0
+        t_last = t_now
         if qpos.shape[0] >= 3:
             qpos[2] += float(self.cfg_ctrl.root_z_offset)
 
         snapshot = self.snapshot_builder.build(qpos, timestamp_ns=timestamp_ns)
+        t_now = time.perf_counter()
+        if timings is not None:
+            timings["snapshot"] = (t_now - t_last) * 1000.0
+        t_last = t_now
         output = extract_tracking_bfm_sparse_command(
             snapshot,
             anchor_body_name=self.cfg_ctrl.anchor_body_name,
             ee_body_names=(self.cfg_ctrl.left_ee_body_name, self.cfg_ctrl.right_ee_body_name),
             state=self.state,
         )
+        t_now = time.perf_counter()
+        if timings is not None:
+            timings["sparse_extract"] = (t_now - t_last) * 1000.0
+        t_last = t_now
         try:
             output.update(self.wbteleop_extractor.extract(snapshot, state=self.state))
         except (KeyError, ValueError):
             pass
+        t_now = time.perf_counter()
+        if timings is not None:
+            timings["wbteleop_extract"] = (t_now - t_last) * 1000.0
         output["_commands"] = list(commands)
         return output
 
-    def get_data(self):
+    def _get_data_sync(self):
+        timings: dict[str, float] = {}
+        t_last = time.perf_counter()
         (
             smplx_data,
             _left_hand_data,
@@ -172,11 +210,16 @@ class PicoRetargetTrackingBfmCtrl(Controller):
             controller_data,
             _headset_data,
         ) = self.streamer.get_current_frame()
+        t_now = time.perf_counter()
+        timings["pico_read"] = (t_now - t_last) * 1000.0
+        t_last = t_now
         commands = self._step_state_machine(controller_data)
+        t_now = time.perf_counter()
+        timings["state_machine"] = (t_now - t_last) * 1000.0
         timestamp_ns = int(time.time() * 1e9)
 
         if self.state == "active" and smplx_data is not None:
-            self._last_output = self._active_output(smplx_data, timestamp_ns, commands)
+            self._last_output = self._active_output(smplx_data, timestamp_ns, commands, timings)
             if self._pending_motion_reset:
                 self._last_output["_commands"].append("[MOTION_RESET]")
                 self._pending_motion_reset = False
@@ -187,7 +230,13 @@ class PicoRetargetTrackingBfmCtrl(Controller):
             self._last_output["state"] = self.state
             self._last_output["timestamp_ns"] = timestamp_ns
             self._last_output["_commands"] = list(commands)
+        self._last_output["_profile_timings"] = dict(timings)
         return dict(self._last_output)
+
+    def get_data(self):
+        if self._async_worker is not None:
+            return self._async_worker.get_data()
+        return self._get_data_sync()
 
     def process_triggers(self, ctrl_data):
         commands = list(ctrl_data.pop("_commands", []))

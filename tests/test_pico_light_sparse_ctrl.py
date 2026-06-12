@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import time
 import unittest
+from queue import Queue
 from unittest.mock import patch
 
 import numpy as np
@@ -71,8 +73,9 @@ class _FakeRetargetReader:
 
 class _FakeRetargetStreamer:
     def get_current_frame(self):
+        qpos = np.zeros(29, dtype=np.float32)
         return (
-            None,
+            {"qpos": qpos},
             None,
             None,
             {
@@ -94,6 +97,50 @@ class _FakeRetargetStreamer:
             },
             None,
         )
+
+
+class _FakeLightRetarget:
+    def retarget(self, smplx_data, offset_to_ground=True):
+        del offset_to_ground
+        return np.asarray(smplx_data["qpos"], dtype=np.float32)
+
+
+class _FakeLightSnapshotBuilder:
+    def build(self, qpos, timestamp_ns):
+        from robojudo.tools.tracking_bfm_sparse_command import RetargetMotionSnapshot
+
+        del qpos
+        return RetargetMotionSnapshot(
+            body_names=("pelvis", "left_wrist_yaw_link", "right_wrist_yaw_link"),
+            body_pos_w=np.array(
+                [
+                    [0.0, 0.0, 0.8],
+                    [0.2, 0.1, 1.0],
+                    [-0.2, -0.1, 1.0],
+                ],
+                dtype=np.float32,
+            ),
+            body_quat_w=np.array(
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0, 0.0],
+                ],
+                dtype=np.float32,
+            ),
+            body_lin_vel_w=np.zeros((3, 3), dtype=np.float32),
+            body_ang_vel_w=np.zeros((3, 3), dtype=np.float32),
+            timestamp_ns=timestamp_ns,
+            qpos=np.zeros(36, dtype=np.float32),
+        )
+
+
+class _QueueReader:
+    def __init__(self):
+        self.frames = Queue()
+
+    def read(self) -> dict:
+        return self.frames.get()
 
 
 def _frame(
@@ -130,9 +177,13 @@ def _frame(
     }
 
 
+def _cfg(**kwargs) -> PicoLightSparseCtrlCfg:
+    return PicoLightSparseCtrlCfg(async_read=False, **kwargs)
+
+
 class TestPicoLightSparseCtrl(unittest.TestCase):
     def test_state_machine_cycles_and_shutdown_command(self):
-        cfg = PicoLightSparseCtrlCfg()
+        cfg = _cfg()
         reader = _FakeReader(
             [
                 _frame(timestamp_ns=0),
@@ -166,7 +217,7 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         self.assertEqual(commands, ["[SHUTDOWN]"])
 
     def test_velocity_and_height_mapping_in_active_state(self):
-        cfg = PicoLightSparseCtrlCfg(vx_scale=1.0, vy_scale=0.5, wz_scale=1.0, base_height_rate=0.3)
+        cfg = _cfg(vx_scale=1.0, vy_scale=0.5, wz_scale=1.0, base_height_rate=0.3)
         reader = _FakeReader(
             [
                 _frame(timestamp_ns=0, right_a=True),
@@ -196,7 +247,7 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
 
     def test_retarget_ee_pose_source_overrides_light_controller_delta_mapping(self):
         retarget_ee_pose = np.linspace(-0.4, 0.4, 18, dtype=np.float32)
-        cfg = PicoLightSparseCtrlCfg(vx_scale=1.0, vy_scale=0.5, retarget_ee_pose=True)
+        cfg = _cfg(vx_scale=1.0, vy_scale=0.5, retarget_ee_pose=True)
         reader = _FakeReader(
             [
                 _frame(timestamp_ns=0, right_a=True),
@@ -220,7 +271,7 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
 
     def test_retarget_ee_pose_frame_overrides_light_controller_delta_mapping(self):
         retarget_ee_pose = np.linspace(0.4, -0.4, 18, dtype=np.float32)
-        cfg = PicoLightSparseCtrlCfg(vx_scale=1.0, vy_scale=0.5, retarget_ee_pose=True)
+        cfg = _cfg(vx_scale=1.0, vy_scale=0.5, retarget_ee_pose=True)
         active_frame = _frame(
             timestamp_ns=100_000_000,
             left_axis=(0.5, 1.0),
@@ -243,7 +294,7 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         np.testing.assert_allclose(data["ee_pose"], retarget_ee_pose, atol=1e-6)
 
     def test_retarget_ee_pose_mode_uses_single_retarget_reader_instead_of_pico_sdk_reader(self):
-        cfg = PicoLightSparseCtrlCfg(retarget_ee_pose=True)
+        cfg = _cfg(retarget_ee_pose=True)
         with (
             patch("robojudo.controller.pico_light_sparse_ctrl._PicoSdkReader") as sdk_reader_cls,
             patch("robojudo.controller.pico_light_sparse_ctrl._RetargetPicoReader", _FakeRetargetReader),
@@ -254,12 +305,12 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         self.assertIsInstance(ctrl._sdk_reader, _FakeRetargetReader)
 
     def test_retarget_pico_reader_uses_xrobot_controller_fields_and_timestamp(self):
-        cfg = PicoLightSparseCtrlCfg(retarget_ee_pose=True)
+        cfg = _cfg(retarget_ee_pose=True)
         reader = _RetargetPicoReader(
             cfg,
             streamer=_FakeRetargetStreamer(),
-            retarget=object(),
-            snapshot_builder=object(),
+            retarget=_FakeLightRetarget(),
+            snapshot_builder=_FakeLightSnapshotBuilder(),
         )
 
         frame = reader.read()
@@ -275,9 +326,14 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         self.assertFalse(frame["right_a"])
         self.assertFalse(frame["left_axis_click"])
         self.assertTrue(frame["right_axis_click"])
+        timings = frame["_profile_timings"]
+        self.assertGreaterEqual(timings["pico_read"], 0.0)
+        self.assertGreaterEqual(timings["retarget"], 0.0)
+        self.assertGreaterEqual(timings["snapshot"], 0.0)
+        self.assertGreaterEqual(timings["sparse_extract"], 0.0)
 
     def test_idle_and_active_no_move_use_training_default_wrist_pose(self):
-        cfg = PicoLightSparseCtrlCfg()
+        cfg = _cfg()
         reader = _FakeReader(
             [
                 _frame(timestamp_ns=0),
@@ -297,7 +353,7 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         np.testing.assert_allclose(active_no_move["ee_pose"], expected, atol=1e-6)
 
     def test_pause_freezes_last_commands(self):
-        cfg = PicoLightSparseCtrlCfg()
+        cfg = _cfg()
         reader = _FakeReader(
             [
                 _frame(timestamp_ns=0, right_a=True),
@@ -316,3 +372,33 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         self.assertEqual(paused["state"], "pause")
         np.testing.assert_allclose(frozen["base_lin_vel_b"], active["base_lin_vel_b"])
         np.testing.assert_allclose(frozen["base_ang_vel_b"], active["base_ang_vel_b"])
+
+    def test_async_get_data_returns_cached_output_while_reader_waits(self):
+        reader = _QueueReader()
+        ctrl = PicoLightSparseCtrl(cfg_ctrl=PicoLightSparseCtrlCfg(), sdk_reader=reader)
+
+        start = time.perf_counter()
+        idle = ctrl.get_data()
+        elapsed = time.perf_counter() - start
+
+        self.assertLess(elapsed, 0.05)
+        self.assertEqual(idle["state"], "idle")
+
+    def test_async_shutdown_command_is_drained_once(self):
+        reader = _QueueReader()
+        ctrl = PicoLightSparseCtrl(cfg_ctrl=PicoLightSparseCtrlCfg(), sdk_reader=reader)
+
+        reader.frames.put(_frame(timestamp_ns=1, left_x=True))
+        deadline = time.time() + 1.0
+        commands = []
+        while time.time() < deadline:
+            data = ctrl.get_data()
+            _processed, commands = ctrl.process_triggers(data)
+            if commands:
+                break
+            time.sleep(0.01)
+
+        self.assertEqual(commands, ["[SHUTDOWN]"])
+        data = ctrl.get_data()
+        _processed, commands = ctrl.process_triggers(data)
+        self.assertEqual(commands, [])

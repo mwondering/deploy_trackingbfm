@@ -265,6 +265,10 @@ class PicoLightSparseCtrlCfg(CtrlCfg):
 
     stick_deadzone: float = 0.08
     trigger_deadzone: float = 0.1
+    async_read: bool = True
+    async_worker_sleep_s: float = 0.0
+    async_profile: bool = True
+    async_profile_interval: int = 50
 
 
 class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
@@ -278,6 +282,10 @@ class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
     anchor_body_name: str = "pelvis"
     left_ee_body_name: str = "left_wrist_yaw_link"
     right_ee_body_name: str = "right_wrist_yaw_link"
+    async_read: bool = True
+    async_worker_sleep_s: float = 0.0
+    async_profile: bool = True
+    async_profile_interval: int = 50
 
     triggers: dict[str, str] = {
         "LeftController.key_one": "[SHUTDOWN]",

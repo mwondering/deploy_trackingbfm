@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import time
 import unittest
+from queue import Queue
 
 import numpy as np
 
@@ -125,6 +127,18 @@ def _frame_without_smplx(*, right_a=False, left_x=False, timestamp_ns=1) -> tupl
     return None, None, None, controller_data, None
 
 
+def _cfg(**kwargs) -> PicoRetargetTrackingBfmCtrlCfg:
+    return PicoRetargetTrackingBfmCtrlCfg(async_read=False, **kwargs)
+
+
+class _QueueStreamer:
+    def __init__(self):
+        self.frames = Queue()
+
+    def get_current_frame(self):
+        return self.frames.get()
+
+
 class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
     def test_active_state_retargets_and_outputs_sparse_tracking_bfm_command(self):
         streamer = _FakeStreamer(
@@ -136,7 +150,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         retarget = _FakeRetarget()
         builder = _FakeSnapshotBuilder()
         ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            cfg_ctrl=_cfg(),
             streamer=streamer,
             retarget=retarget,
             snapshot_builder=builder,
@@ -158,7 +172,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
     def test_right_key_enters_policy_from_idle(self):
         streamer = _FakeStreamer([_frame(qpos=[0.0], right_a=True, timestamp_ns=1)])
         ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            cfg_ctrl=_cfg(),
             streamer=streamer,
             retarget=_FakeRetarget(),
             snapshot_builder=_FakeSnapshotBuilder(),
@@ -178,7 +192,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
             ]
         )
         ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            cfg_ctrl=_cfg(),
             streamer=streamer,
             retarget=_FakeRetarget(),
             snapshot_builder=_FakeSnapshotBuilder(),
@@ -197,7 +211,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
     def test_idle_output_uses_sparse_training_default_pose(self):
         streamer = _FakeStreamer([_frame(qpos=[0.0], right_a=False)])
         ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            cfg_ctrl=_cfg(),
             streamer=streamer,
             retarget=_FakeRetarget(),
             snapshot_builder=_FakeSnapshotBuilder(),
@@ -219,7 +233,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
             ]
         )
         ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            cfg_ctrl=_cfg(),
             streamer=streamer,
             retarget=_FakeRetarget(),
             snapshot_builder=_FakeSnapshotBuilder(),
@@ -237,7 +251,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
     def test_left_key_requests_shutdown(self):
         streamer = _FakeStreamer([_frame(qpos=[0.0], left_x=True)])
         ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            cfg_ctrl=_cfg(),
             streamer=streamer,
             retarget=_FakeRetarget(),
             snapshot_builder=_FakeSnapshotBuilder(),
@@ -257,7 +271,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
             ]
         )
         ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            cfg_ctrl=_cfg(),
             streamer=streamer,
             retarget=_FakeRetarget(),
             snapshot_builder=_FakeWbTeleopSnapshotBuilder(),
@@ -271,6 +285,65 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         self.assertEqual(data["motion_ref_ang_vel"].shape, (3,))
         np.testing.assert_allclose(data["command"][:29], np.full(29, 0.01, dtype=np.float32), atol=1e-6)
         self.assertEqual(tuple(data["_ref_body_names"]), DEFAULT_WBTELEOP_MOTION_BODY_NAMES)
+
+    def test_sync_output_includes_pico_step_profile_timings(self):
+        streamer = _FakeStreamer([_frame(qpos=[0.0] * 29, right_a=True)])
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=_cfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeWbTeleopSnapshotBuilder(),
+        )
+
+        data = ctrl.get_data()
+
+        timings = data["_profile_timings"]
+        self.assertGreaterEqual(timings["pico_read"], 0.0)
+        self.assertGreaterEqual(timings["state_machine"], 0.0)
+        self.assertGreaterEqual(timings["retarget"], 0.0)
+        self.assertGreaterEqual(timings["snapshot"], 0.0)
+        self.assertGreaterEqual(timings["sparse_extract"], 0.0)
+        self.assertGreaterEqual(timings["wbteleop_extract"], 0.0)
+
+    def test_async_get_data_returns_cached_output_while_streamer_waits(self):
+        streamer = _QueueStreamer()
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeSnapshotBuilder(),
+        )
+
+        start = time.perf_counter()
+        idle = ctrl.get_data()
+        elapsed = time.perf_counter() - start
+
+        self.assertLess(elapsed, 0.05)
+        self.assertEqual(idle["state"], "idle")
+
+    def test_async_commands_are_drained_once(self):
+        streamer = _QueueStreamer()
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeSnapshotBuilder(),
+        )
+
+        streamer.frames.put(_frame(qpos=[0.0], right_a=True, timestamp_ns=1))
+        deadline = time.time() + 1.0
+        commands = []
+        while time.time() < deadline:
+            data = ctrl.get_data()
+            _processed, commands = ctrl.process_triggers(data)
+            if commands:
+                break
+            time.sleep(0.01)
+
+        self.assertEqual(commands, ["[MOTION_RESET]"])
+        again = ctrl.get_data()
+        _processed, commands_again = ctrl.process_triggers(again)
+        self.assertEqual(commands_again, [])
 
 
 if __name__ == "__main__":
