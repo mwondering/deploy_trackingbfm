@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import time
 import unittest
 from queue import Queue
+from unittest.mock import patch
 
 import numpy as np
 
@@ -305,45 +305,20 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         self.assertGreaterEqual(timings["sparse_extract"], 0.0)
         self.assertGreaterEqual(timings["wbteleop_extract"], 0.0)
 
-    def test_async_get_data_returns_cached_output_while_streamer_waits(self):
-        streamer = _QueueStreamer()
-        ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
-            streamer=streamer,
-            retarget=_FakeRetarget(),
-            snapshot_builder=_FakeSnapshotBuilder(),
-        )
+    def test_async_read_uses_process_latest_output_worker_client(self):
+        with patch("robojudo.controller.pico_retarget_tracking_bfm_ctrl.ProcessLatestOutputWorker") as worker_cls:
+            worker = worker_cls.return_value
+            worker.get_data.return_value = {"state": "idle", "_commands": []}
+            ctrl = PicoRetargetTrackingBfmCtrl(
+                cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
+                streamer=_QueueStreamer(),
+                retarget=_FakeRetarget(),
+                snapshot_builder=_FakeSnapshotBuilder(),
+            )
 
-        start = time.perf_counter()
-        idle = ctrl.get_data()
-        elapsed = time.perf_counter() - start
-
-        self.assertLess(elapsed, 0.05)
-        self.assertEqual(idle["state"], "idle")
-
-    def test_async_commands_are_drained_once(self):
-        streamer = _QueueStreamer()
-        ctrl = PicoRetargetTrackingBfmCtrl(
-            cfg_ctrl=PicoRetargetTrackingBfmCtrlCfg(),
-            streamer=streamer,
-            retarget=_FakeRetarget(),
-            snapshot_builder=_FakeSnapshotBuilder(),
-        )
-
-        streamer.frames.put(_frame(qpos=[0.0], right_a=True, timestamp_ns=1))
-        deadline = time.time() + 1.0
-        commands = []
-        while time.time() < deadline:
-            data = ctrl.get_data()
-            _processed, commands = ctrl.process_triggers(data)
-            if commands:
-                break
-            time.sleep(0.01)
-
-        self.assertEqual(commands, ["[MOTION_RESET]"])
-        again = ctrl.get_data()
-        _processed, commands_again = ctrl.process_triggers(again)
-        self.assertEqual(commands_again, [])
+        worker_cls.assert_called_once()
+        worker.start.assert_called_once()
+        self.assertEqual(ctrl.get_data(), {"state": "idle", "_commands": []})
 
 
 if __name__ == "__main__":

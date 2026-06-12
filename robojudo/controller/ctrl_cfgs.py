@@ -227,6 +227,16 @@ class TwistRedisCtrlCfg(CtrlCfg):
     buffer_size: int = 5  # size of the data buffer to store recent commands
 
 
+class PicoProcessWorkerCfg(Config):
+    queue_size: int = 1
+    sleep_s: float = 0.0
+    error_sleep_s: float = 0.05
+    profile: bool = True
+    profile_interval: int = 50
+    start_method: str = "spawn"
+    stop_timeout_s: float = 1.0
+
+
 class PicoLightSparseCtrlCfg(CtrlCfg):
     ctrl_type: str = "PicoLightSparseCtrl"
 
@@ -266,9 +276,7 @@ class PicoLightSparseCtrlCfg(CtrlCfg):
     stick_deadzone: float = 0.08
     trigger_deadzone: float = 0.1
     async_read: bool = True
-    async_worker_sleep_s: float = 0.0
-    async_profile: bool = True
-    async_profile_interval: int = 50
+    worker: PicoProcessWorkerCfg = PicoProcessWorkerCfg()
 
 
 class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
@@ -283,9 +291,7 @@ class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
     left_ee_body_name: str = "left_wrist_yaw_link"
     right_ee_body_name: str = "right_wrist_yaw_link"
     async_read: bool = True
-    async_worker_sleep_s: float = 0.0
-    async_profile: bool = True
-    async_profile_interval: int = 50
+    worker: PicoProcessWorkerCfg = PicoProcessWorkerCfg()
 
     triggers: dict[str, str] = {
         "LeftController.key_one": "[SHUTDOWN]",

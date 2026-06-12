@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 import unittest
 from queue import Queue
 from unittest.mock import patch
@@ -373,32 +372,12 @@ class TestPicoLightSparseCtrl(unittest.TestCase):
         np.testing.assert_allclose(frozen["base_lin_vel_b"], active["base_lin_vel_b"])
         np.testing.assert_allclose(frozen["base_ang_vel_b"], active["base_ang_vel_b"])
 
-    def test_async_get_data_returns_cached_output_while_reader_waits(self):
-        reader = _QueueReader()
-        ctrl = PicoLightSparseCtrl(cfg_ctrl=PicoLightSparseCtrlCfg(), sdk_reader=reader)
+    def test_async_read_uses_process_latest_output_worker_client(self):
+        with patch("robojudo.controller.pico_light_sparse_ctrl.ProcessLatestOutputWorker") as worker_cls:
+            worker = worker_cls.return_value
+            worker.get_data.return_value = {"state": "idle", "_commands": []}
+            ctrl = PicoLightSparseCtrl(cfg_ctrl=PicoLightSparseCtrlCfg(), sdk_reader=_QueueReader())
 
-        start = time.perf_counter()
-        idle = ctrl.get_data()
-        elapsed = time.perf_counter() - start
-
-        self.assertLess(elapsed, 0.05)
-        self.assertEqual(idle["state"], "idle")
-
-    def test_async_shutdown_command_is_drained_once(self):
-        reader = _QueueReader()
-        ctrl = PicoLightSparseCtrl(cfg_ctrl=PicoLightSparseCtrlCfg(), sdk_reader=reader)
-
-        reader.frames.put(_frame(timestamp_ns=1, left_x=True))
-        deadline = time.time() + 1.0
-        commands = []
-        while time.time() < deadline:
-            data = ctrl.get_data()
-            _processed, commands = ctrl.process_triggers(data)
-            if commands:
-                break
-            time.sleep(0.01)
-
-        self.assertEqual(commands, ["[SHUTDOWN]"])
-        data = ctrl.get_data()
-        _processed, commands = ctrl.process_triggers(data)
-        self.assertEqual(commands, [])
+        worker_cls.assert_called_once()
+        worker.start.assert_called_once()
+        self.assertEqual(ctrl.get_data(), {"state": "idle", "_commands": []})

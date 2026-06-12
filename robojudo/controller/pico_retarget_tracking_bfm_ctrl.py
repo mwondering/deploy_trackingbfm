@@ -7,7 +7,7 @@ import numpy as np
 
 from robojudo.controller import Controller, ctrl_registry
 from robojudo.controller.ctrl_cfgs import PicoRetargetTrackingBfmCtrlCfg
-from robojudo.controller.utils.latest_output_worker import LatestOutputWorker
+from robojudo.controller.utils.process_latest_output_worker import ProcessLatestOutputWorker
 from robojudo.tools.tracking_bfm_sparse_command import (
     DEFAULT_SPARSE_ANCHOR_HEIGHT_W,
     DEFAULT_SPARSE_EE_POSE,
@@ -64,6 +64,12 @@ def _make_real_snapshot_builder(cfg: PicoRetargetTrackingBfmCtrlCfg):
     return MujocoRetargetSnapshotBuilder(model, data, tuple(body_names))
 
 
+def _make_pico_retarget_tracking_bfm_process_producer(cfg_ctrl: PicoRetargetTrackingBfmCtrlCfg):
+    sync_cfg = cfg_ctrl.model_copy(update={"async_read": False})
+    ctrl = PicoRetargetTrackingBfmCtrl(cfg_ctrl=sync_cfg)
+    return ctrl.get_data
+
+
 @ctrl_registry.register
 class PicoRetargetTrackingBfmCtrl(Controller):
     cfg_ctrl: PicoRetargetTrackingBfmCtrlCfg
@@ -78,22 +84,30 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         snapshot_builder=None,
     ):
         super().__init__(cfg_ctrl=cfg_ctrl, env=env, device=device)
-        self.streamer = streamer or _make_real_streamer()
-        self.retarget = retarget or _make_real_retarget(cfg_ctrl)
-        self.snapshot_builder = snapshot_builder or _make_real_snapshot_builder(cfg_ctrl)
-        self.wbteleop_extractor = WbTeleopRetargetCommandExtractor(joint_dof=29)
         self._async_worker = None
+        self.wbteleop_extractor = None
         self.reset()
         if self.cfg_ctrl.async_read:
-            self._async_worker = LatestOutputWorker(
+            worker_cfg = self.cfg_ctrl.worker
+            self._async_worker = ProcessLatestOutputWorker(
                 name="PicoRetargetTrackingBfmCtrlWorker",
-                producer=self._get_data_sync,
+                producer_factory=_make_pico_retarget_tracking_bfm_process_producer,
+                producer_args=(self.cfg_ctrl,),
                 initial_output=self._last_output,
-                sleep_s=self.cfg_ctrl.async_worker_sleep_s,
-                profile_enabled=self.cfg_ctrl.async_profile,
-                profile_interval=self.cfg_ctrl.async_profile_interval,
+                sleep_s=worker_cfg.sleep_s,
+                error_sleep_s=worker_cfg.error_sleep_s,
+                profile_enabled=worker_cfg.profile,
+                profile_interval=worker_cfg.profile_interval,
+                queue_size=worker_cfg.queue_size,
+                start_method=worker_cfg.start_method,
             )
             self._async_worker.start()
+        else:
+            self.streamer = streamer or _make_real_streamer()
+            self.retarget = retarget or _make_real_retarget(cfg_ctrl)
+            self.snapshot_builder = snapshot_builder or _make_real_snapshot_builder(cfg_ctrl)
+            self.wbteleop_extractor = WbTeleopRetargetCommandExtractor(joint_dof=29)
+            self.reset()
 
     def reset(self):
         self.state = "idle"
@@ -101,7 +115,8 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         self._left_key_prev = False
         self._left_axis_click_prev = False
         self._pending_motion_reset = False
-        self.wbteleop_extractor.reset()
+        if self.wbteleop_extractor is not None:
+            self.wbteleop_extractor.reset()
         self._last_output = self._neutral_output([])
         if self._async_worker is not None:
             self._async_worker.reset(self._last_output)
@@ -237,6 +252,10 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         if self._async_worker is not None:
             return self._async_worker.get_data()
         return self._get_data_sync()
+
+    def close(self):
+        if self._async_worker is not None:
+            self._async_worker.stop(timeout=self.cfg_ctrl.worker.stop_timeout_s)
 
     def process_triggers(self, ctrl_data):
         commands = list(ctrl_data.pop("_commands", []))
