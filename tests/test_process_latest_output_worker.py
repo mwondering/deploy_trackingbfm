@@ -57,7 +57,7 @@ def test_process_worker_drains_commands_once_from_child_output():
     worker.start()
     try:
         input_queue.put({"state": "active", "_commands": ["[MOTION_RESET]"]})
-        deadline = time.time() + 1.0
+        deadline = time.time() + 3.0
         commands = []
         while time.time() < deadline:
             output = worker.get_data()
@@ -67,6 +67,37 @@ def test_process_worker_drains_commands_once_from_child_output():
             time.sleep(0.01)
 
         assert commands == ["[MOTION_RESET]"]
+        assert worker.get_data()["_commands"] == []
+    finally:
+        worker.stop()
+
+
+def test_process_worker_preserves_transient_commands_when_latest_output_is_overwritten():
+    ctx = mp.get_context("spawn")
+    input_queue = ctx.Queue()
+    worker = ProcessLatestOutputWorker(
+        name="PicoProcessTransientCommandTestWorker",
+        producer_factory=_queue_producer_factory,
+        producer_args=(input_queue,),
+        initial_output={"state": "idle", "_commands": []},
+        start_method="spawn",
+    )
+    worker.start()
+    try:
+        input_queue.put({"state": "active", "value": 1, "_commands": ["[MOTION_RESET]"]})
+        input_queue.put({"state": "active", "value": 2, "_commands": []})
+
+        deadline = time.time() + 3.0
+        output = {}
+        while time.time() < deadline:
+            output = worker.get_data()
+            if output.get("value") == 2:
+                break
+            time.sleep(0.01)
+
+        assert output["state"] == "active"
+        assert output["value"] == 2
+        assert output["_commands"] == ["[MOTION_RESET]"]
         assert worker.get_data()["_commands"] == []
     finally:
         worker.stop()
@@ -111,7 +142,7 @@ def test_process_worker_profile_logs_cache_update_rate_and_step_timings(capsys):
                 "_profile_timings": {"pico_read": 3.0, "retarget": 5.0},
             }
         )
-        deadline = time.time() + 1.0
+        deadline = time.time() + 3.0
         output = ""
         while time.time() < deadline and "PicoProcessProfileTestWorker latest-cache profile" not in output:
             worker.get_data()

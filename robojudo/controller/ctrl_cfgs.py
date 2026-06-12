@@ -228,7 +228,7 @@ class TwistRedisCtrlCfg(CtrlCfg):
 
 
 class PicoProcessWorkerCfg(Config):
-    queue_size: int = 1
+    queue_size: int = 0
     sleep_s: float = 0.0
     error_sleep_s: float = 0.05
     profile: bool = True

@@ -100,6 +100,7 @@ def _process_worker_entry(
     producer_args: tuple[Any, ...],
     producer_kwargs: dict[str, Any],
     output_queue,
+    command_queue,
     profile_queue,
     control_queue,
     stop_event,
@@ -132,8 +133,11 @@ def _process_worker_entry(
         output = dict(output)
         step_timings = dict(output.pop("_profile_timings", {}))
         step_timings["worker_cycle"] = cycle_ms
-        output["_worker_generation"] = generation
-        _put_latest(output_queue, output)
+        latest_output, commands = _split_output(output)
+        latest_output["_worker_generation"] = generation
+        if commands:
+            command_queue.put({"generation": generation, "commands": commands})
+        _put_latest(output_queue, latest_output)
         error_logged = False
 
         profile_message = profiler.record(step_timings)
@@ -156,7 +160,7 @@ class ProcessLatestOutputWorker:
         error_sleep_s: float = 0.05,
         profile_enabled: bool = False,
         profile_interval: int = 50,
-        queue_size: int = 1,
+        queue_size: int = 0,
         start_method: str = "spawn",
     ):
         self._name = name
@@ -168,7 +172,9 @@ class ProcessLatestOutputWorker:
         self._error_sleep_s = float(max(error_sleep_s, 0.0))
         self._profile_enabled = bool(profile_enabled)
         self._profile_interval = max(1, int(profile_interval))
-        self._output_queue = self._ctx.Queue(maxsize=max(1, int(queue_size)))
+        queue_size = int(queue_size)
+        self._output_queue = self._ctx.Queue(maxsize=max(0, queue_size))
+        self._command_queue = self._ctx.Queue()
         self._profile_queue = self._ctx.Queue()
         self._control_queue = self._ctx.Queue()
         self._stop_event = self._ctx.Event()
@@ -189,6 +195,7 @@ class ProcessLatestOutputWorker:
                 "producer_args": self._producer_args,
                 "producer_kwargs": self._producer_kwargs,
                 "output_queue": self._output_queue,
+                "command_queue": self._command_queue,
                 "profile_queue": self._profile_queue,
                 "control_queue": self._control_queue,
                 "stop_event": self._stop_event,
@@ -216,6 +223,7 @@ class ProcessLatestOutputWorker:
 
     def reset(self, initial_output: dict[str, Any]) -> None:
         self._drain_output_queue()
+        self._drain_command_queue()
         self._drain_profile_queue()
         self._generation += 1
         latest_output, _commands = _split_output(initial_output)
@@ -232,6 +240,7 @@ class ProcessLatestOutputWorker:
     def get_data(self) -> dict[str, Any]:
         self._drain_profile_queue()
         self._drain_output_queue()
+        self._drain_command_queue()
         output = dict(self._latest_output)
         output["_commands"] = list(self._pending_commands)
         self._pending_commands.clear()
@@ -249,6 +258,18 @@ class ProcessLatestOutputWorker:
             latest_output, commands = _split_output(output)
             self._latest_output = latest_output
             self._pending_commands.extend(commands)
+
+    def _drain_command_queue(self) -> None:
+        while True:
+            try:
+                message = self._command_queue.get_nowait()
+            except queue.Empty:
+                return
+            if not isinstance(message, dict):
+                continue
+            if int(message.get("generation", -1)) != self._generation:
+                continue
+            self._pending_commands.extend(message.get("commands", []))
 
     def _drain_profile_queue(self) -> None:
         while True:
