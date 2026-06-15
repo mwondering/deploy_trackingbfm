@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from robojudo.controller import Controller, ctrl_registry
-from robojudo.controller.ctrl_cfgs import PicoRetargetTrackingBfmCtrlCfg
+from robojudo.controller.ctrl_cfgs import PicoRetargetTrackingBfmCtrlCfg, PicoSourceMonitorCfg
 from robojudo.controller.utils.process_latest_output_worker import ProcessLatestOutputWorker
 from robojudo.tools.tracking_bfm_sparse_command import (
     DEFAULT_SPARSE_ANCHOR_HEIGHT_W,
@@ -64,6 +64,149 @@ def _make_real_snapshot_builder(cfg: PicoRetargetTrackingBfmCtrlCfg):
     return MujocoRetargetSnapshotBuilder(model, data, tuple(body_names))
 
 
+_RED = "\033[31m"
+_YELLOW = "\033[33m"
+_RESET = "\033[0m"
+
+
+def _source_timestamp_ns(controller_data) -> int | None:
+    if not isinstance(controller_data, dict):
+        return None
+    timestamp = controller_data.get("timestamp")
+    if timestamp is None:
+        return None
+    return int(timestamp)
+
+
+class _PicoSourceUpdateMonitor:
+    def __init__(self, cfg: PicoSourceMonitorCfg):
+        self.cfg = cfg
+        self.reset()
+
+    def reset(self):
+        self._last_source_timestamp_ns: int | None = None
+        self._last_source_wall_time: float | None = None
+        self._last_stale_warning_wall_time = 0.0
+        self._missing_timestamp_warned = False
+        self._window_updates = 0
+        self._window_source_dt_sum_s = 0.0
+        self._window_source_dt_count = 0
+        self._window_max_source_dt_s = 0.0
+        self._window_min_source_hz = float("inf")
+        self._window_read_ms_sum = 0.0
+        self._window_read_count = 0
+        self._window_duplicate_reads = 0
+        self._window_slow_events = 0
+
+    def record(self, *, source_timestamp_ns: int | None, pico_read_ms: float) -> None:
+        if not self.cfg.enabled:
+            return
+
+        now = time.perf_counter()
+        self._window_read_ms_sum += float(pico_read_ms)
+        self._window_read_count += 1
+        if source_timestamp_ns is None:
+            if not self._missing_timestamp_warned:
+                self._print_red("Pico source timestamp missing; cannot monitor source update hz")
+                self._missing_timestamp_warned = True
+            return
+
+        if self._last_source_timestamp_ns is None:
+            self._last_source_timestamp_ns = int(source_timestamp_ns)
+            self._last_source_wall_time = now
+            self._window_updates += 1
+            self._maybe_print_ok_summary()
+            return
+
+        if source_timestamp_ns <= self._last_source_timestamp_ns:
+            self._window_duplicate_reads += 1
+            self._maybe_print_stale(now)
+            return
+
+        source_dt_s = max((source_timestamp_ns - self._last_source_timestamp_ns) * 1e-9, 1e-9)
+        wall_dt_s = max(now - (self._last_source_wall_time or now), 1e-9)
+        source_hz = 1.0 / source_dt_s
+        wall_hz = 1.0 / wall_dt_s
+
+        self._last_source_timestamp_ns = int(source_timestamp_ns)
+        self._last_source_wall_time = now
+        self._window_updates += 1
+        self._window_source_dt_sum_s += source_dt_s
+        self._window_source_dt_count += 1
+        self._window_max_source_dt_s = max(self._window_max_source_dt_s, source_dt_s)
+        self._window_min_source_hz = min(self._window_min_source_hz, source_hz)
+
+        min_update_hz = max(float(self.cfg.min_update_hz), 1e-6)
+        if source_hz < min_update_hz or wall_hz < min_update_hz:
+            self._window_slow_events += 1
+            self._print_red(
+                "Pico source slow: "
+                f"source_hz={source_hz:.1f}Hz source_dt={source_dt_s * 1000.0:.1f}ms, "
+                f"wall_hz={wall_hz:.1f}Hz wall_dt={wall_dt_s * 1000.0:.1f}ms, "
+                f"duplicate_reads={self._window_duplicate_reads}"
+            )
+
+        self._maybe_print_ok_summary()
+
+    def _maybe_print_stale(self, now: float) -> None:
+        if self._last_source_wall_time is None:
+            return
+        stale_s = now - self._last_source_wall_time
+        min_update_hz = max(float(self.cfg.min_update_hz), 1e-6)
+        if stale_s < 1.0 / min_update_hz:
+            return
+        repeat_s = max(float(self.cfg.stale_repeat_s), 0.0)
+        if repeat_s > 0.0 and now - self._last_stale_warning_wall_time < repeat_s:
+            return
+        self._last_stale_warning_wall_time = now
+        self._window_slow_events += 1
+        self._print_red(
+            "Pico source stale: "
+            f"no new timestamp for {stale_s * 1000.0:.1f}ms, "
+            f"duplicate_reads={self._window_duplicate_reads}"
+        )
+
+    def _maybe_print_ok_summary(self) -> None:
+        interval = max(1, int(self.cfg.ok_interval))
+        if self._window_updates < interval:
+            return
+        if self._window_slow_events == 0:
+            avg_source_hz = (
+                self._window_source_dt_count / self._window_source_dt_sum_s
+                if self._window_source_dt_sum_s > 0.0
+                else 0.0
+            )
+            min_source_hz = self._window_min_source_hz if self._window_min_source_hz != float("inf") else 0.0
+            read_ms = self._window_read_ms_sum / max(self._window_read_count, 1)
+            self._print_yellow(
+                "Pico source OK: "
+                f"updates={self._window_updates}, "
+                f"avg_source_hz={avg_source_hz:.1f}Hz, "
+                f"min_source_hz={min_source_hz:.1f}Hz, "
+                f"max_source_dt={self._window_max_source_dt_s * 1000.0:.1f}ms, "
+                f"duplicate_reads={self._window_duplicate_reads}, "
+                f"pico_read={read_ms:.2f}ms"
+            )
+        self._reset_window()
+
+    def _reset_window(self) -> None:
+        self._window_updates = 0
+        self._window_source_dt_sum_s = 0.0
+        self._window_source_dt_count = 0
+        self._window_max_source_dt_s = 0.0
+        self._window_min_source_hz = float("inf")
+        self._window_read_ms_sum = 0.0
+        self._window_read_count = 0
+        self._window_duplicate_reads = 0
+        self._window_slow_events = 0
+
+    def _print_red(self, message: str) -> None:
+        print(f"{_RED}{message}{_RESET}", flush=True)
+
+    def _print_yellow(self, message: str) -> None:
+        print(f"{_YELLOW}{message}{_RESET}", flush=True)
+
+
 def _make_pico_retarget_tracking_bfm_process_producer(cfg_ctrl: PicoRetargetTrackingBfmCtrlCfg):
     sync_cfg = cfg_ctrl.model_copy(update={"async_read": False})
     ctrl = PicoRetargetTrackingBfmCtrl(cfg_ctrl=sync_cfg)
@@ -86,6 +229,7 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         super().__init__(cfg_ctrl=cfg_ctrl, env=env, device=device)
         self._async_worker = None
         self.wbteleop_extractor = None
+        self._source_monitor = _PicoSourceUpdateMonitor(cfg_ctrl.source_monitor)
         self.reset()
         if self.cfg_ctrl.async_read:
             worker_cfg = self.cfg_ctrl.worker
@@ -115,6 +259,7 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         self._left_key_prev = False
         self._left_axis_click_prev = False
         self._pending_motion_reset = False
+        self._source_monitor.reset()
         if self.wbteleop_extractor is not None:
             self.wbteleop_extractor.reset()
         self._last_output = self._neutral_output([])
@@ -228,6 +373,10 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         t_now = time.perf_counter()
         timings["pico_read"] = (t_now - t_last) * 1000.0
         t_last = t_now
+        self._source_monitor.record(
+            source_timestamp_ns=_source_timestamp_ns(controller_data),
+            pico_read_ms=timings["pico_read"],
+        )
         commands = self._step_state_machine(controller_data)
         t_now = time.perf_counter()
         timings["state_machine"] = (t_now - t_last) * 1000.0

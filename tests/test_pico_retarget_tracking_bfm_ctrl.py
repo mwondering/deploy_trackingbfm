@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import unittest
+from contextlib import redirect_stdout
 from queue import Queue
 from unittest.mock import patch
 
@@ -305,6 +307,52 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         self.assertGreaterEqual(timings["sparse_extract"], 0.0)
         self.assertGreaterEqual(timings["wbteleop_extract"], 0.0)
 
+    def test_source_monitor_prints_red_when_source_update_rate_drops_below_50hz(self):
+        streamer = _FakeStreamer(
+            [
+                _frame(qpos=[0.0] * 29, timestamp_ns=0),
+                _frame(qpos=[0.0] * 29, timestamp_ns=25_000_000),
+            ]
+        )
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=_cfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeWbTeleopSnapshotBuilder(),
+        )
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            ctrl.get_data()
+            ctrl.get_data()
+
+        output = stdout.getvalue()
+        self.assertIn("\033[31m", output)
+        self.assertIn("Pico source slow", output)
+        self.assertIn("40.0Hz", output)
+
+    def test_source_monitor_prints_yellow_summary_every_50_good_source_updates(self):
+        streamer = _FakeStreamer(
+            [_frame(qpos=[0.0] * 29, timestamp_ns=i * 10_000_000) for i in range(50)]
+        )
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=_cfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeWbTeleopSnapshotBuilder(),
+        )
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            for _ in range(50):
+                ctrl.get_data()
+
+        output = stdout.getvalue()
+        self.assertIn("\033[33m", output)
+        self.assertIn("Pico source OK", output)
+        self.assertIn("updates=50", output)
+        self.assertNotIn("\033[31m", output)
+
     def test_async_read_uses_process_latest_output_worker_client(self):
         with patch("robojudo.controller.pico_retarget_tracking_bfm_ctrl.ProcessLatestOutputWorker") as worker_cls:
             worker = worker_cls.return_value
@@ -318,6 +366,7 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
 
         worker_cls.assert_called_once()
         worker.start.assert_called_once()
+        self.assertFalse(worker_cls.call_args.kwargs["profile_enabled"])
         self.assertEqual(ctrl.get_data(), {"state": "idle", "_commands": []})
 
 

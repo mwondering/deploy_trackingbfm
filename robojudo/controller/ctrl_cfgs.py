@@ -231,10 +231,17 @@ class PicoProcessWorkerCfg(Config):
     queue_size: int = 0
     sleep_s: float = 0.0
     error_sleep_s: float = 0.05
-    profile: bool = True
+    profile: bool = False
     profile_interval: int = 50
     start_method: str = "spawn"
     stop_timeout_s: float = 1.0
+
+
+class PicoSourceMonitorCfg(Config):
+    enabled: bool = True
+    min_update_hz: float = 50.0
+    ok_interval: int = 50
+    stale_repeat_s: float = 0.5
 
 
 class PicoLightSparseCtrlCfg(CtrlCfg):
@@ -292,6 +299,7 @@ class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
     right_ee_body_name: str = "right_wrist_yaw_link"
     async_read: bool = True
     worker: PicoProcessWorkerCfg = PicoProcessWorkerCfg()
+    source_monitor: PicoSourceMonitorCfg = PicoSourceMonitorCfg()
 
     triggers: dict[str, str] = {
         "LeftController.key_one": "[SHUTDOWN]",
