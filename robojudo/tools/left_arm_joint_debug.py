@@ -1,0 +1,369 @@
+from __future__ import annotations
+
+import logging
+import time
+from collections import deque
+from typing import Any
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+LEFT_ARM_JOINT_NAMES = (
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+)
+SHOULDER_ROLL_JOINT_NAME = "left_shoulder_roll_joint"
+SHOULDER_ROLL_JOINT_INDEX = LEFT_ARM_JOINT_NAMES.index(SHOULDER_ROLL_JOINT_NAME)
+G1_LEFT_ARM_JOINT_INDICES = np.asarray([15, 16, 17, 18, 19, 20, 21], dtype=np.int64)
+
+_JOINT_NAME_KEYS = ("joint_names", "dof_names", "robot_joint_names")
+_VECTOR_KEYS = (
+    "qpos",
+    "joint_pos",
+    "joint_positions",
+    "dof_pos",
+    "dof_positions",
+    "robot_qpos",
+    "robot_joint_pos",
+)
+_NESTED_KEYS = ("motion", "robot", "body", "smplx", "xrobot", "data")
+_NON_GUI_BACKENDS = {"agg", "pdf", "ps", "svg", "template", "cairo"}
+
+
+def nan_left_arm_joints() -> np.ndarray:
+    return np.full(len(LEFT_ARM_JOINT_NAMES), np.nan, dtype=np.float32)
+
+
+def _as_1d_float_array(value: Any) -> np.ndarray | None:
+    try:
+        arr = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+    if arr.ndim == 0:
+        return None
+    if arr.ndim == 2 and arr.shape[0] == 1:
+        arr = arr[0]
+    elif arr.ndim == 2 and arr.shape[1] == 1:
+        arr = arr[:, 0]
+    elif arr.ndim > 1:
+        return None
+    return arr.reshape(-1)
+
+
+def _joint_names_from_mapping(data: dict[str, Any]) -> tuple[str, ...] | None:
+    for key in _JOINT_NAME_KEYS:
+        names = data.get(key)
+        if names is not None:
+            return tuple(str(name) for name in names)
+    return None
+
+
+def _extract_from_named_mapping(data: dict[str, Any]) -> np.ndarray | None:
+    if not all(name in data for name in LEFT_ARM_JOINT_NAMES):
+        return None
+    try:
+        return np.asarray([data[name] for name in LEFT_ARM_JOINT_NAMES], dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_left_arm_from_robot_vector(
+    value: Any,
+    joint_names: tuple[str, ...] | list[str] | None = None,
+) -> np.ndarray | None:
+    arr = _as_1d_float_array(value)
+    if arr is None:
+        return None
+
+    if arr.shape[0] == len(LEFT_ARM_JOINT_NAMES):
+        return arr.astype(np.float32, copy=True)
+
+    if joint_names is not None:
+        names = tuple(str(name) for name in joint_names)
+        if len(names) > 0 and arr.shape[0] >= len(names):
+            joint_values = arr[-len(names) :]
+            try:
+                indices = np.asarray([names.index(name) for name in LEFT_ARM_JOINT_NAMES], dtype=np.int64)
+            except ValueError:
+                indices = None
+            if indices is not None and int(indices.max()) < joint_values.shape[0]:
+                return joint_values[indices].astype(np.float32, copy=True)
+
+    if arr.shape[0] >= 29:
+        return arr[-29:][G1_LEFT_ARM_JOINT_INDICES].astype(np.float32, copy=True)
+    return None
+
+
+def left_arm_joints_or_nan(
+    value: Any,
+    joint_names: tuple[str, ...] | list[str] | None = None,
+) -> np.ndarray:
+    joints = extract_left_arm_from_robot_vector(value, joint_names=joint_names)
+    if joints is None:
+        return nan_left_arm_joints()
+    return joints
+
+
+def extract_raw_pico_left_arm_joints(smplx_data: Any) -> tuple[np.ndarray, str]:
+    if isinstance(smplx_data, dict):
+        mapped = _extract_from_named_mapping(smplx_data)
+        if mapped is not None:
+            return mapped, "joint-name-map"
+
+        joint_names = _joint_names_from_mapping(smplx_data)
+        for key in _VECTOR_KEYS:
+            if key not in smplx_data:
+                continue
+            joints = extract_left_arm_from_robot_vector(smplx_data[key], joint_names=joint_names)
+            if joints is not None:
+                return joints, key
+
+        for key in _NESTED_KEYS:
+            nested = smplx_data.get(key)
+            if isinstance(nested, dict):
+                joints, source = extract_raw_pico_left_arm_joints(nested)
+                if not np.isnan(joints).all():
+                    return joints, f"{key}.{source}"
+        return nan_left_arm_joints(), "unavailable"
+
+    joints = extract_left_arm_from_robot_vector(smplx_data)
+    if joints is not None:
+        return joints, type(smplx_data).__name__
+    return nan_left_arm_joints(), "unavailable"
+
+
+def _is_non_gui_backend(backend: str) -> bool:
+    backend_lower = str(backend).lower()
+    return backend_lower in _NON_GUI_BACKENDS or "inline" in backend_lower
+
+
+class LeftArmJointDebugPlot:
+    def __init__(
+        self,
+        *,
+        window_s: float = 10.0,
+        update_hz: float = 10.0,
+        joint_names: tuple[str, ...] = LEFT_ARM_JOINT_NAMES,
+    ):
+        self.window_s = max(float(window_s), 0.1)
+        self.update_interval_s = 1.0 / max(float(update_hz), 0.1)
+        self.joint_names = tuple(joint_names)
+        self._last_update_s = 0.0
+        self._times: deque[float] = deque()
+        self._retarget: deque[float] = deque()
+        self._actual: deque[float] = deque()
+        self._enabled = True
+
+        try:
+            import matplotlib
+
+            # TkAgg can fail while resizing zero-sized toolbar icons on some displays.
+            matplotlib.rcParams["toolbar"] = "None"
+            import matplotlib.pyplot as plt
+
+            self._plt = plt
+            backend = str(plt.get_backend())
+            if _is_non_gui_backend(backend):
+                self._enabled = False
+                logger.warning(
+                    "Matplotlib left arm joint debug plot disabled: backend=%s is non-GUI. "
+                    "Use a GUI backend such as QtAgg or TkAgg and make sure DISPLAY is set.",
+                    backend,
+                )
+                return
+            plt.ion()
+            self._fig, axes = plt.subplots(1, 1, sharex=True, figsize=(10, 5.2))
+            self._axis = np.asarray(axes, dtype=object).reshape(-1)[0]
+            column_specs = (
+                ("retarget", "#0072b2"),
+                ("sim actual", "#009e73"),
+            )
+            self._lines = tuple(
+                self._axis.plot([], [], color=color, linewidth=2.0, marker=".", markersize=3.0)[0]
+                for _name, color in column_specs
+            )
+            self._axis.set_facecolor("#111820")
+            self._axis.set_xlim(-self.window_s, 0.0)
+            self._axis.set_ylim(-1.0, 1.0)
+            self._axis.set_xticks([])
+            self._axis.set_yticks([])
+            self._axis.tick_params(length=0)
+            for spine in self._axis.spines.values():
+                spine.set_color("#2d3840")
+                spine.set_linewidth(0.8)
+            manager = getattr(getattr(self._fig, "canvas", None), "manager", None)
+            if manager is not None and hasattr(manager, "set_window_title"):
+                manager.set_window_title("Left shoulder roll: retarget (blue) | sim actual (green)")
+            window = getattr(manager, "window", None)
+            if window is not None:
+                if hasattr(window, "geometry"):
+                    window.geometry("1000x520+60+60")
+                if hasattr(window, "minsize"):
+                    window.minsize(700, 360)
+            if manager is not None and hasattr(manager, "resize"):
+                manager.resize(1000, 520)
+            patch = getattr(self._fig, "patch", None)
+            if patch is not None and hasattr(patch, "set_facecolor"):
+                patch.set_facecolor("#0b0f13")
+            if hasattr(self._fig, "set_size_inches"):
+                self._fig.set_size_inches(10, 5.2, forward=True)
+            if hasattr(self._fig, "subplots_adjust"):
+                self._fig.subplots_adjust(left=0.04, right=0.98, top=0.96, bottom=0.08)
+            try:
+                self._fig.show()
+            except Exception as exc:
+                logger.warning("Left arm joint debug plot show failed; updates will still be attempted: %s", exc)
+            try:
+                if hasattr(plt, "show"):
+                    plt.show(block=False)
+                canvas = getattr(self._fig, "canvas", None)
+                if canvas is not None and hasattr(canvas, "draw_idle"):
+                    canvas.draw_idle()
+                if canvas is not None and hasattr(canvas, "flush_events"):
+                    canvas.flush_events()
+                plt.pause(0.001)
+            except Exception as exc:
+                logger.warning("Left arm joint debug plot event pump failed; updates will still be attempted: %s", exc)
+            logger.info("Left arm joint debug plot opened with matplotlib backend=%s", backend)
+        except Exception as exc:
+            self._enabled = False
+            logger.warning("Matplotlib left arm joint debug plot disabled: %s", exc)
+
+    def push(self, timestamp_s: float, raw_joints: Any, retarget_joints: Any, actual_joints: Any) -> None:
+        del raw_joints
+        if not self._enabled:
+            return
+        self._times.append(float(timestamp_s))
+        self._retarget.append(self._shoulder_roll_or_nan(retarget_joints))
+        self._actual.append(self._shoulder_roll_or_nan(actual_joints))
+        self._trim()
+
+    def _shoulder_roll_or_nan(self, joints: Any) -> float:
+        left_arm = left_arm_joints_or_nan(joints)
+        return float(left_arm[SHOULDER_ROLL_JOINT_INDEX])
+
+    def _trim(self) -> None:
+        if not self._times:
+            return
+        min_time_s = self._times[-1] - self.window_s
+        while self._times and self._times[0] < min_time_s:
+            self._times.popleft()
+            self._retarget.popleft()
+            self._actual.popleft()
+
+    def maybe_update(self) -> None:
+        if not self._enabled or not self._times:
+            return
+        now_s = time.perf_counter()
+        if now_s - self._last_update_s < self.update_interval_s:
+            return
+        self._last_update_s = now_s
+
+        try:
+            times = np.asarray(self._times, dtype=np.float32)
+            times = times - times[-1]
+            retarget = np.asarray(self._retarget, dtype=np.float32)
+            actual = np.asarray(self._actual, dtype=np.float32)
+            retarget_line, actual_line = self._lines
+            retarget_line.set_data(times, retarget)
+            actual_line.set_data(times, actual)
+            values = np.concatenate([retarget, actual])
+            values = values[np.isfinite(values)]
+            self._axis.set_xlim(-self.window_s, 0.0)
+            if values.size > 0:
+                pad = max(float(np.ptp(values)) * 0.1, 0.05)
+                self._axis.set_ylim(float(values.min()) - pad, float(values.max()) + pad)
+            self._fig.canvas.draw_idle()
+            self._fig.canvas.flush_events()
+            self._plt.pause(0.001)
+        except Exception as exc:
+            self._enabled = False
+            logger.warning("Left arm joint debug plot disabled after update failure: %s", exc)
+
+
+class MujocoLeftArmJointDebugPlot:
+    def __init__(
+        self,
+        viewer,
+        *,
+        update_hz: float = 10.0,
+        joint_names: tuple[str, ...] = LEFT_ARM_JOINT_NAMES,
+    ):
+        self.viewer = viewer
+        self.update_interval_s = 1.0 / max(float(update_hz), 0.1)
+        self.joint_names = tuple(joint_names)
+        self._last_update_s = 0.0
+        self._latest_raw = nan_left_arm_joints()
+        self._latest_retarget = nan_left_arm_joints()
+        self._latest_actual = nan_left_arm_joints()
+        self._enabled = self._setup_viewer_figures()
+
+    def _setup_viewer_figures(self) -> bool:
+        if self.viewer is None or not all(hasattr(self.viewer, name) for name in ("figs", "add_line_to_fig")):
+            return False
+
+        figure_titles = ("Left arm raw Pico", "Left arm retarget", "Left arm MuJoCo actual")
+        try:
+            for fig_idx, title in enumerate(figure_titles):
+                fig = self.viewer.figs[fig_idx]
+                fig.title = title
+                fig.flg_legend = True
+                fig.xlabel = "steps"
+                fig.figurergba[0] = 0.1
+                fig.figurergba[3] = 0.28
+                for joint_name in self.joint_names:
+                    line_name = self._line_name(fig_idx, joint_name)
+                    try:
+                        self.viewer.add_line_to_fig(line_name=line_name, fig_idx=fig_idx)
+                    except Exception:
+                        # Reusing a viewer after reset may leave existing lines in place.
+                        pass
+        except Exception as exc:
+            logger.warning("MuJoCo left arm joint debug plot disabled: %s", exc)
+            return False
+
+        logger.info("Left arm joint debug plot attached to MuJoCo viewer graph overlay; press G to show/hide graphs")
+        return True
+
+    @staticmethod
+    def _line_name(fig_idx: int, joint_name: str) -> str:
+        source = ("raw", "retarget", "actual")[fig_idx]
+        short_joint = joint_name.removeprefix("left_").removesuffix("_joint")
+        return f"{source}:{short_joint}"
+
+    def push(self, timestamp_s: float, raw_joints: Any, retarget_joints: Any, actual_joints: Any) -> None:
+        del timestamp_s
+        if not self._enabled:
+            return
+        self._latest_raw = left_arm_joints_or_nan(raw_joints)
+        self._latest_retarget = left_arm_joints_or_nan(retarget_joints)
+        self._latest_actual = left_arm_joints_or_nan(actual_joints, joint_names=self.joint_names)
+
+    def maybe_update(self) -> None:
+        if not self._enabled:
+            return
+        now_s = time.perf_counter()
+        if now_s - self._last_update_s < self.update_interval_s:
+            return
+        self._last_update_s = now_s
+
+        values_by_fig = (self._latest_raw, self._latest_retarget, self._latest_actual)
+        try:
+            for fig_idx, values in enumerate(values_by_fig):
+                for joint_name, value in zip(self.joint_names, values, strict=True):
+                    if not np.isfinite(value):
+                        continue
+                    self.viewer.add_data_to_line(
+                        line_name=self._line_name(fig_idx, joint_name),
+                        line_data=float(value),
+                        fig_idx=fig_idx,
+                    )
+        except Exception as exc:
+            self._enabled = False
+            logger.warning("MuJoCo left arm joint debug plot disabled after update failure: %s", exc)

@@ -225,6 +225,23 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         np.testing.assert_allclose(data["ee_pose"], DEFAULT_SPARSE_EE_POSE, atol=1e-6)
         np.testing.assert_allclose(data["anchor_height_w"], [DEFAULT_SPARSE_ANCHOR_HEIGHT_W], atol=1e-6)
 
+    def test_idle_output_includes_raw_left_arm_debug_when_smplx_available(self):
+        qpos = np.arange(29, dtype=np.float32) * 0.1
+        streamer = _FakeStreamer([_frame(qpos=qpos.tolist(), right_a=False)])
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=_cfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeSnapshotBuilder(),
+        )
+
+        data = ctrl.get_data()
+
+        self.assertEqual(data["state"], "idle")
+        expected = qpos[[15, 16, 17, 18, 19, 20, 21]]
+        np.testing.assert_allclose(data["_raw_pico_left_arm_joints"], expected)
+        self.assertEqual(data["_raw_pico_left_arm_source"], "qpos")
+
     def test_pause_freezes_last_sparse_command(self):
         streamer = _FakeStreamer(
             [
@@ -287,6 +304,35 @@ class TestPicoRetargetTrackingBfmCtrl(unittest.TestCase):
         self.assertEqual(data["motion_ref_ang_vel"].shape, (3,))
         np.testing.assert_allclose(data["command"][:29], np.full(29, 0.01, dtype=np.float32), atol=1e-6)
         self.assertEqual(tuple(data["_ref_body_names"]), DEFAULT_WBTELEOP_MOTION_BODY_NAMES)
+
+    def test_active_state_outputs_left_arm_debug_joint_vectors(self):
+        qpos = np.arange(29, dtype=np.float32) * 0.1
+        streamer = _FakeStreamer(
+            [
+                _frame(qpos=qpos.tolist(), right_a=True),
+            ]
+        )
+        ctrl = PicoRetargetTrackingBfmCtrl(
+            cfg_ctrl=_cfg(),
+            streamer=streamer,
+            retarget=_FakeRetarget(),
+            snapshot_builder=_FakeWbTeleopSnapshotBuilder(),
+        )
+
+        data = ctrl.get_data()
+
+        assert data["_left_arm_joint_names"] == (
+            "left_shoulder_pitch_joint",
+            "left_shoulder_roll_joint",
+            "left_shoulder_yaw_joint",
+            "left_elbow_joint",
+            "left_wrist_roll_joint",
+            "left_wrist_pitch_joint",
+            "left_wrist_yaw_joint",
+        )
+        expected = qpos[[15, 16, 17, 18, 19, 20, 21]]
+        np.testing.assert_allclose(data["_raw_pico_left_arm_joints"], expected)
+        np.testing.assert_allclose(data["_retarget_left_arm_joints"], expected)
 
     def test_sync_output_includes_pico_step_profile_timings(self):
         streamer = _FakeStreamer([_frame(qpos=[0.0] * 29, right_a=True)])

@@ -14,6 +14,10 @@ from robojudo.pipeline import Pipeline, pipeline_registry
 from robojudo.pipeline.pipeline_cfgs import RlPipelineCfg
 from robojudo.policy import Policy, PolicyCfg
 from robojudo.tools.dof import DoFAdapter
+from robojudo.tools.left_arm_joint_debug import (
+    LeftArmJointDebugPlot,
+    left_arm_joints_or_nan,
+)
 from robojudo.tools.tool_cfgs import DoFConfig
 from robojudo.utils.progress import ProgressBar
 from robojudo.utils.util_func import get_gravity_orientation
@@ -114,6 +118,7 @@ class RlPipeline(Pipeline):
         self._hold_to_policy_blend_step = 0
         self._hold_to_policy_blend_steps = 0
         self._last_pd_target = None
+        self._left_arm_joint_plot = self._make_left_arm_joint_plot()
 
         self.reset()
         self.self_check()
@@ -359,6 +364,44 @@ class RlPipeline(Pipeline):
             json.dumps(self._json_ready_debug_value(payload), indent=2, sort_keys=True),
         )
 
+    def _make_left_arm_joint_plot(self):
+        debug_cfg = getattr(self.cfg, "debug", None)
+        if not bool(getattr(debug_cfg, "wbteleop_left_arm_plot", False)):
+            return None
+
+        try:
+            plot = LeftArmJointDebugPlot(
+                window_s=float(getattr(debug_cfg, "wbteleop_left_arm_plot_window_s", 10.0)),
+                update_hz=float(getattr(debug_cfg, "wbteleop_left_arm_plot_update_hz", 10.0)),
+            )
+        except Exception as exc:
+            logger.warning("Failed to create left arm joint debug plot: %s", exc)
+            plot = None
+
+        return plot
+
+    def _maybe_update_left_arm_joint_plot(self, ctrl_data, actual_dof_pos) -> None:
+        plot = getattr(self, "_left_arm_joint_plot", None)
+        if plot is None:
+            return
+
+        ctrl_payload = {}
+        ctrl_type = getattr(self.policy, "ctrl_type", None)
+        if ctrl_type is not None:
+            maybe_payload = ctrl_data.get(ctrl_type, {})
+            if isinstance(maybe_payload, dict):
+                ctrl_payload = maybe_payload
+
+        raw_joints = ctrl_payload.get("_raw_pico_left_arm_joints")
+        retarget_joints = ctrl_payload.get("_retarget_left_arm_joints")
+
+        actual_joints = left_arm_joints_or_nan(
+            actual_dof_pos,
+            joint_names=getattr(self.env, "joint_names", None),
+        )
+        plot.push(time.time(), raw_joints, retarget_joints, actual_joints)
+        plot.maybe_update()
+
     def reset(self):
         logger.info("Pipeline reset")
         self.timestep = 0
@@ -529,6 +572,10 @@ class RlPipeline(Pipeline):
 
         if not dry_run:
             self.env.step(pd_target, extras.get("hand_pose", None))
+            actual_dof_pos = getattr(self.env, "dof_pos", None)
+            if actual_dof_pos is None:
+                actual_dof_pos = getattr(env_data, "dof_pos", None)
+            self._maybe_update_left_arm_joint_plot(ctrl_data, actual_dof_pos)
         t_now = time.perf_counter()
         timings["env_step"] = t_now - t_last
         t_last = t_now

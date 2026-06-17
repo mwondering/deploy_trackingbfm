@@ -29,6 +29,15 @@ class DebugCfg(Config):
     wbteleop_proprio_debug_interval: int = 50
     """Number of frames between wbteleop proprio debug prints."""
 
+    wbteleop_left_arm_plot: bool = False
+    """Show live rolling left-arm raw/retarget/actual joint comparison plot."""
+
+    wbteleop_left_arm_plot_window_s: float = 10.0
+    """Rolling window length in seconds for wbteleop left-arm debug plot."""
+
+    wbteleop_left_arm_plot_update_hz: float = 10.0
+    """Maximum update rate for wbteleop left-arm debug plot."""
+
 
 class DebugLogger:
     """

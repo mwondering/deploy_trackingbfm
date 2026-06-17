@@ -174,7 +174,12 @@ class g1_wbteleop_sim2sim(RlPipelineCfg):
     """Pico full-body retarget -> wbteleop ONNX -> G1 MuJoCo sim2sim."""
 
     robot: str = "g1"
-    debug: DebugCfg = DebugCfg(log_obs=False, profile_timing=False, profile_interval=50)
+    debug: DebugCfg = DebugCfg(
+        log_obs=False,
+        profile_timing=False,
+        profile_interval=50,
+        wbteleop_left_arm_plot=True,
+    )
     _deploy_dof = G1_29DoF()
     env: G1MujocoEnvCfg = G1MujocoEnvCfg(
         born_place_align=False,

@@ -15,6 +15,8 @@ from robojudo.config.g1.g1_custom_cfg import (
 )
 from robojudo.pipeline.rl_pipeline import RlPipeline
 
+G1_LEFT_ARM_JOINT_INDICES = np.asarray([15, 16, 17, 18, 19, 20, 21], dtype=np.int64)
+
 
 class _FakeEnv:
     num_dofs = 29
@@ -374,3 +376,95 @@ def test_npz_playback_real_prepare_hint_mentions_unitree_start_key() -> None:
 
     assert "Unitree Start" in pipeline._default_pose_start_hint()
     assert "replay" in pipeline._default_pose_start_hint()
+
+
+def test_wbteleop_sim2sim_enables_left_arm_joint_plot_debug_config() -> None:
+    cfg = g1_wbteleop_sim2sim()
+
+    assert cfg.debug.wbteleop_left_arm_plot is True
+    assert cfg.debug.wbteleop_left_arm_plot_window_s == 10.0
+
+
+def test_left_arm_joint_plot_receives_raw_retarget_and_actual_vectors() -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_sim2sim())
+    pipeline.policy = types.SimpleNamespace(ctrl_type="PicoRetargetTrackingBfmCtrl")
+    raw = np.arange(7, dtype=np.float32)
+    retarget = np.arange(7, dtype=np.float32) + 10.0
+    actual_dof = np.arange(29, dtype=np.float32) * 0.01
+    calls = []
+
+    class _FakePlot:
+        def push(self, timestamp_s, raw_joints, retarget_joints, actual_joints):
+            calls.append((timestamp_s, raw_joints, retarget_joints, actual_joints))
+
+        def maybe_update(self):
+            calls.append("update")
+
+    pipeline._left_arm_joint_plot = _FakePlot()
+
+    pipeline._maybe_update_left_arm_joint_plot(
+        Box(
+            {
+                "PicoRetargetTrackingBfmCtrl": {
+                    "_raw_pico_left_arm_joints": raw,
+                    "_retarget_left_arm_joints": retarget,
+                }
+            }
+        ),
+        actual_dof,
+    )
+
+    timestamp_s, got_raw, got_retarget, got_actual = calls[0]
+    assert timestamp_s > 0.0
+    np.testing.assert_allclose(got_raw, raw)
+    np.testing.assert_allclose(got_retarget, retarget)
+    np.testing.assert_allclose(got_actual, actual_dof[G1_LEFT_ARM_JOINT_INDICES])
+    assert calls[1] == "update"
+
+
+def test_left_arm_joint_plot_updates_actual_without_pico_joint_fields() -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_sim2sim())
+    pipeline.policy = types.SimpleNamespace(ctrl_type="PicoRetargetTrackingBfmCtrl")
+    actual_dof = np.arange(29, dtype=np.float32) * 0.01
+    calls = []
+
+    class _FakePlot:
+        def push(self, timestamp_s, raw_joints, retarget_joints, actual_joints):
+            calls.append((timestamp_s, raw_joints, retarget_joints, actual_joints))
+
+        def maybe_update(self):
+            calls.append("update")
+
+    pipeline._left_arm_joint_plot = _FakePlot()
+
+    pipeline._maybe_update_left_arm_joint_plot(
+        Box({"PicoRetargetTrackingBfmCtrl": {"state": "idle"}}),
+        actual_dof,
+    )
+
+    timestamp_s, got_raw, got_retarget, got_actual = calls[0]
+    assert timestamp_s > 0.0
+    assert got_raw is None
+    assert got_retarget is None
+    np.testing.assert_allclose(got_actual, actual_dof[G1_LEFT_ARM_JOINT_INDICES])
+    assert calls[1] == "update"
+
+
+def test_left_arm_joint_plot_does_not_fall_back_to_mujoco_viewer_when_matplotlib_disabled(monkeypatch) -> None:
+    pipeline = _make_pipeline_shell(g1_wbteleop_sim2sim())
+    viewer = object()
+    pipeline.env.viewer = viewer
+    calls = []
+
+    class _DisabledMatplotlibPlot:
+        _enabled = False
+
+    monkeypatch.setattr(
+        "robojudo.pipeline.rl_pipeline.LeftArmJointDebugPlot",
+        lambda **kwargs: _DisabledMatplotlibPlot(),
+    )
+
+    plot = pipeline._make_left_arm_joint_plot()
+
+    assert isinstance(plot, _DisabledMatplotlibPlot)
+    assert calls == []

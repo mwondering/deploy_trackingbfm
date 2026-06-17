@@ -8,6 +8,11 @@ import numpy as np
 from robojudo.controller import Controller, ctrl_registry
 from robojudo.controller.ctrl_cfgs import PicoRetargetTrackingBfmCtrlCfg, PicoSourceMonitorCfg
 from robojudo.controller.utils.process_latest_output_worker import ProcessLatestOutputWorker
+from robojudo.tools.left_arm_joint_debug import (
+    LEFT_ARM_JOINT_NAMES,
+    extract_raw_pico_left_arm_joints,
+    left_arm_joints_or_nan,
+)
 from robojudo.tools.tracking_bfm_sparse_command import (
     DEFAULT_SPARSE_ANCHOR_HEIGHT_W,
     DEFAULT_SPARSE_EE_POSE,
@@ -277,6 +282,12 @@ class PicoRetargetTrackingBfmCtrl(Controller):
             "_commands": list(commands),
         }
 
+    def _add_raw_left_arm_debug(self, output: dict[str, Any], smplx_data) -> None:
+        raw_left_arm_joints, raw_left_arm_source = extract_raw_pico_left_arm_joints(smplx_data)
+        output["_left_arm_joint_names"] = LEFT_ARM_JOINT_NAMES
+        output["_raw_pico_left_arm_joints"] = raw_left_arm_joints
+        output["_raw_pico_left_arm_source"] = raw_left_arm_source
+
     def _button(self, controller_data, controller_name: str, button_name: str) -> bool:
         if not isinstance(controller_data, dict):
             return False
@@ -323,6 +334,7 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         commands: list[str],
         timings: dict[str, float] | None = None,
     ) -> dict[str, Any]:
+        raw_left_arm_joints, raw_left_arm_source = extract_raw_pico_left_arm_joints(smplx_data)
         t_last = time.perf_counter()
         qpos = np.asarray(
             self.retarget.retarget(smplx_data, offset_to_ground=self.cfg_ctrl.offset_to_ground),
@@ -357,6 +369,10 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         t_now = time.perf_counter()
         if timings is not None:
             timings["wbteleop_extract"] = (t_now - t_last) * 1000.0
+        output["_left_arm_joint_names"] = LEFT_ARM_JOINT_NAMES
+        output["_raw_pico_left_arm_joints"] = raw_left_arm_joints
+        output["_raw_pico_left_arm_source"] = raw_left_arm_source
+        output["_retarget_left_arm_joints"] = left_arm_joints_or_nan(qpos)
         output["_commands"] = list(commands)
         return output
 
@@ -383,21 +399,23 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         timestamp_ns = int(time.time() * 1e9)
 
         if self.state == "active" and smplx_data is not None:
-            print("\n State active and smplx_data is not None\n ")
+            # print("\n State active and smplx_data is not None\n ")
             self._last_output = self._active_output(smplx_data, timestamp_ns, commands, timings)
             if self._pending_motion_reset:
-                print("\n Pending motion reset\n ")
+                # print("\n Pending motion reset\n ")
                 self._last_output["_commands"].append("[MOTION_RESET]")
                 self._pending_motion_reset = False
         elif self.state == "idle":
-            print("\n State idle\n ")
+            # print("\n State idle\n ")
             self._last_output = self._neutral_output(commands)
         else:
-            print("\n State unknown\n ")
+            # print("\n State unknown\n ")
             self._last_output = dict(self._last_output)
             self._last_output["state"] = self.state
             self._last_output["timestamp_ns"] = timestamp_ns
             self._last_output["_commands"] = list(commands)
+        if smplx_data is not None and self.state != "active":
+            self._add_raw_left_arm_debug(self._last_output, smplx_data)
         self._last_output["_profile_timings"] = dict(timings)
         return dict(self._last_output)
 
