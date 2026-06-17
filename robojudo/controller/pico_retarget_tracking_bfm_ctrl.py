@@ -383,13 +383,17 @@ class PicoRetargetTrackingBfmCtrl(Controller):
         timestamp_ns = int(time.time() * 1e9)
 
         if self.state == "active" and smplx_data is not None:
+            print("\n State active and smplx_data is not None\n ")
             self._last_output = self._active_output(smplx_data, timestamp_ns, commands, timings)
             if self._pending_motion_reset:
+                print("\n Pending motion reset\n ")
                 self._last_output["_commands"].append("[MOTION_RESET]")
                 self._pending_motion_reset = False
         elif self.state == "idle":
+            print("\n State idle\n ")
             self._last_output = self._neutral_output(commands)
         else:
+            print("\n State unknown\n ")
             self._last_output = dict(self._last_output)
             self._last_output["state"] = self.state
             self._last_output["timestamp_ns"] = timestamp_ns
