@@ -392,14 +392,13 @@ class RlPipeline(Pipeline):
             if isinstance(maybe_payload, dict):
                 ctrl_payload = maybe_payload
 
-        raw_joints = ctrl_payload.get("_raw_pico_left_arm_joints")
         retarget_joints = ctrl_payload.get("_retarget_left_arm_joints")
 
         actual_joints = left_arm_joints_or_nan(
             actual_dof_pos,
             joint_names=getattr(self.env, "joint_names", None),
         )
-        plot.push(time.time(), raw_joints, retarget_joints, actual_joints)
+        plot.push(time.time(), retarget_joints, actual_joints)
         plot.maybe_update()
 
     def reset(self):

@@ -5,7 +5,7 @@ import types
 
 import numpy as np
 
-from robojudo.tools.left_arm_joint_debug import LeftArmJointDebugPlot, MujocoLeftArmJointDebugPlot
+from robojudo.tools.left_arm_joint_debug import LeftArmJointDebugPlot
 
 
 class _FakeLine:
@@ -226,12 +226,11 @@ def test_left_arm_plot_draws_only_shoulder_roll_retarget_and_actual(monkeypatch)
     _fake_matplotlib_modules(monkeypatch, axes_holder)
     plot = LeftArmJointDebugPlot(update_hz=1_000_000.0)
 
-    raw = np.asarray([100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0], dtype=np.float32)
     retarget = np.asarray([10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0], dtype=np.float32)
     actual = np.asarray([20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0], dtype=np.float32)
 
-    plot.push(1.0, raw_joints=raw, retarget_joints=retarget, actual_joints=actual)
-    plot.push(2.0, raw_joints=raw + 1.0, retarget_joints=retarget + 1.0, actual_joints=actual + 1.0)
+    plot.push(1.0, retarget_joints=retarget, actual_joints=actual)
+    plot.push(2.0, retarget_joints=retarget + 1.0, actual_joints=actual + 1.0)
     plot.maybe_update()
 
     retarget_line, actual_line = plot._lines
@@ -240,48 +239,3 @@ def test_left_arm_plot_draws_only_shoulder_roll_retarget_and_actual(monkeypatch)
     assert len(plot._lines) == 2
     assert not hasattr(plot, "_raw")
 
-
-class _FakeMujocoFig:
-    def __init__(self):
-        self.title = ""
-        self.flg_legend = False
-        self.xlabel = ""
-        self.figurergba = [0.0, 0.0, 0.0, 0.0]
-
-
-class _FakeMujocoViewer:
-    def __init__(self):
-        self.figs = [_FakeMujocoFig(), _FakeMujocoFig(), _FakeMujocoFig()]
-        self.lines = []
-        self.data = []
-
-    def add_line_to_fig(self, line_name, fig_idx=0):
-        self.lines.append((line_name, fig_idx))
-
-    def add_data_to_line(self, line_name, line_data, fig_idx=0):
-        self.data.append((line_name, line_data, fig_idx))
-
-
-def test_mujoco_left_arm_plot_registers_three_figures_and_updates_lines():
-    viewer = _FakeMujocoViewer()
-    plot = MujocoLeftArmJointDebugPlot(viewer, update_hz=1_000_000.0)
-
-    assert plot._enabled is True
-    assert [fig.title for fig in viewer.figs] == [
-        "Left arm raw Pico",
-        "Left arm retarget",
-        "Left arm MuJoCo actual",
-    ]
-    assert len(viewer.lines) == 21
-
-    plot.push(
-        1.0,
-        raw_joints=np.arange(7, dtype=np.float32),
-        retarget_joints=np.arange(7, dtype=np.float32) + 10.0,
-        actual_joints=np.arange(7, dtype=np.float32) + 20.0,
-    )
-    plot.maybe_update()
-
-    assert len(viewer.data) == 21
-    assert viewer.data[0] == ("raw:shoulder_pitch", 0.0, 0)
-    assert viewer.data[-1] == ("actual:wrist_yaw", 26.0, 2)
