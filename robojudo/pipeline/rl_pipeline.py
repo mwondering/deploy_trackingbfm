@@ -14,6 +14,7 @@ from robojudo.pipeline import Pipeline, pipeline_registry
 from robojudo.pipeline.pipeline_cfgs import RlPipelineCfg
 from robojudo.policy import Policy, PolicyCfg
 from robojudo.tools.dof import DoFAdapter
+from robojudo.tools.command_smoother import WbTeleopCommandSmoother
 from robojudo.tools.left_arm_joint_debug import (
     LeftArmJointDebugPlot,
     left_arm_joints_or_nan,
@@ -119,6 +120,7 @@ class RlPipeline(Pipeline):
         self._hold_to_policy_blend_steps = 0
         self._last_pd_target = None
         self._left_arm_joint_plot = self._make_left_arm_joint_plot()
+        self._command_smoother = self._make_command_smoother()
 
         self.reset()
         self.self_check()
@@ -364,6 +366,40 @@ class RlPipeline(Pipeline):
             json.dumps(self._json_ready_debug_value(payload), indent=2, sort_keys=True),
         )
 
+    def _make_command_smoother(self):
+        ctrl_type = getattr(self.policy, "ctrl_type", None)
+        cfg_ctrl = next(
+            (c for c in getattr(self.cfg, "ctrl", []) or [] if getattr(c, "ctrl_type", None) == ctrl_type),
+            None,
+        )
+        smoothing = getattr(cfg_ctrl, "command_smoothing", None)
+        if smoothing is None or not bool(getattr(smoothing, "enabled", False)):
+            return None
+
+        try:
+            smoother = WbTeleopCommandSmoother(
+                cutoff_hz=float(getattr(smoothing, "cutoff_hz", 10.0)),
+                joint_snap_threshold=float(getattr(smoothing, "joint_snap_threshold", 1.0)),
+            )
+        except Exception as exc:
+            logger.warning("Failed to create wbteleop command smoother: %s", exc)
+            return None
+
+        logger.info("Wbteleop command smoother enabled (cutoff=%.1f Hz)", float(smoothing.cutoff_hz))
+        return smoother
+
+    def _maybe_smooth_command(self, ctrl_data) -> None:
+        smoother = getattr(self, "_command_smoother", None)
+        if smoother is None:
+            return
+        ctrl_type = getattr(self.policy, "ctrl_type", None)
+        if ctrl_type is None:
+            return
+        payload = ctrl_data.get(ctrl_type)
+        if not isinstance(payload, dict):
+            return
+        smoother.smooth(payload, self.dt)
+
     def _make_left_arm_joint_plot(self):
         debug_cfg = getattr(self.cfg, "debug", None)
         if not bool(getattr(debug_cfg, "wbteleop_left_arm_plot", False)):
@@ -530,6 +566,7 @@ class RlPipeline(Pipeline):
         t_last = t_now
 
         ctrl_data = self.ctrl_manager.get_ctrl_data(env_data)
+        self._maybe_smooth_command(ctrl_data)
         t_now = time.perf_counter()
         timings["ctrl"] = t_now - t_last
         t_last = t_now

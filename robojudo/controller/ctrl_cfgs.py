@@ -244,6 +244,16 @@ class PicoSourceMonitorCfg(Config):
     stale_repeat_s: float = 0.5
 
 
+class CommandSmoothingCfg(Config):
+    """Sim-rate smoothing of the retargeted reference command (see command_smoother)."""
+
+    enabled: bool = True
+    cutoff_hz: float = 10.0
+    """Critically damped filter cutoff; lower = smoother but more lag."""
+    joint_snap_threshold: float = 1.0
+    """Per-joint step (rad) above which the filter snaps instead of blending (teleport guard)."""
+
+
 class PicoLightSparseCtrlCfg(CtrlCfg):
     ctrl_type: str = "PicoLightSparseCtrl"
 
@@ -300,6 +310,7 @@ class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
     async_read: bool = True
     worker: PicoProcessWorkerCfg = PicoProcessWorkerCfg()
     source_monitor: PicoSourceMonitorCfg = PicoSourceMonitorCfg()
+    command_smoothing: CommandSmoothingCfg = CommandSmoothingCfg()
 
     triggers: dict[str, str] = {
         "LeftController.key_one": "[SHUTDOWN]",
