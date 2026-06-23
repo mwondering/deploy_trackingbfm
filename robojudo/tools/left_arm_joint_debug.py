@@ -101,6 +101,7 @@ class LeftArmJointDebugPlot:
         self._last_update_s = 0.0
         self._times: deque[float] = deque()
         self._retarget: deque[float] = deque()
+        self._interp: deque[float] = deque()
         self._actual: deque[float] = deque()
         self._enabled = True
 
@@ -125,7 +126,8 @@ class LeftArmJointDebugPlot:
             self._fig, axes = plt.subplots(1, 1, sharex=True, figsize=(10, 5.2))
             self._axis = np.asarray(axes, dtype=object).reshape(-1)[0]
             column_specs = (
-                ("retarget", "#0072b2"),
+                ("retarget (raw)", "#0072b2"),
+                ("interp", "#e69f00"),
                 ("sim actual", "#009e73"),
             )
             self._lines = tuple(
@@ -143,7 +145,9 @@ class LeftArmJointDebugPlot:
                 spine.set_linewidth(0.8)
             manager = getattr(getattr(self._fig, "canvas", None), "manager", None)
             if manager is not None and hasattr(manager, "set_window_title"):
-                manager.set_window_title("Left shoulder roll: retarget (blue) | sim actual (green)")
+                manager.set_window_title(
+                    "Left shoulder roll: retarget/raw (blue) | interp (orange) | sim actual (green)"
+                )
             window = getattr(manager, "window", None)
             if window is not None:
                 if hasattr(window, "geometry"):
@@ -179,11 +183,12 @@ class LeftArmJointDebugPlot:
             self._enabled = False
             logger.warning("Matplotlib left arm joint debug plot disabled: %s", exc)
 
-    def push(self, timestamp_s: float, retarget_joints: Any, actual_joints: Any) -> None:
+    def push(self, timestamp_s: float, retarget_joints: Any, interp_joints: Any, actual_joints: Any) -> None:
         if not self._enabled:
             return
         self._times.append(float(timestamp_s))
         self._retarget.append(self._shoulder_roll_or_nan(retarget_joints))
+        self._interp.append(self._shoulder_roll_or_nan(interp_joints))
         self._actual.append(self._shoulder_roll_or_nan(actual_joints))
         self._trim()
 
@@ -198,6 +203,7 @@ class LeftArmJointDebugPlot:
         while self._times and self._times[0] < min_time_s:
             self._times.popleft()
             self._retarget.popleft()
+            self._interp.popleft()
             self._actual.popleft()
 
     def maybe_update(self) -> None:
@@ -215,11 +221,13 @@ class LeftArmJointDebugPlot:
             times = np.asarray(self._times, dtype=np.float64)
             times = (times - times[-1]).astype(np.float32)
             retarget = np.asarray(self._retarget, dtype=np.float32)
+            interp = np.asarray(self._interp, dtype=np.float32)
             actual = np.asarray(self._actual, dtype=np.float32)
-            retarget_line, actual_line = self._lines
+            retarget_line, interp_line, actual_line = self._lines
             retarget_line.set_data(times, retarget)
+            interp_line.set_data(times, interp)
             actual_line.set_data(times, actual)
-            values = np.concatenate([retarget, actual])
+            values = np.concatenate([retarget, interp, actual])
             values = values[np.isfinite(values)]
             self._axis.set_xlim(-self.window_s, 0.0)
             if values.size > 0:

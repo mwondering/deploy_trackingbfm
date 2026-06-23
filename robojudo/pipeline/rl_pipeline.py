@@ -14,11 +14,11 @@ from robojudo.pipeline import Pipeline, pipeline_registry
 from robojudo.pipeline.pipeline_cfgs import RlPipelineCfg
 from robojudo.policy import Policy, PolicyCfg
 from robojudo.tools.dof import DoFAdapter
-from robojudo.tools.command_smoother import WbTeleopCommandSmoother
 from robojudo.tools.left_arm_joint_debug import (
     LeftArmJointDebugPlot,
     left_arm_joints_or_nan,
 )
+from robojudo.tools.streamed_command_interpolator import StreamedCommandInterpolator
 from robojudo.tools.tool_cfgs import DoFConfig
 from robojudo.utils.progress import ProgressBar
 from robojudo.utils.util_func import get_gravity_orientation
@@ -120,7 +120,7 @@ class RlPipeline(Pipeline):
         self._hold_to_policy_blend_steps = 0
         self._last_pd_target = None
         self._left_arm_joint_plot = self._make_left_arm_joint_plot()
-        self._command_smoother = self._make_command_smoother()
+        self._command_interpolator = self._make_command_interpolator()
 
         self.reset()
         self.self_check()
@@ -366,31 +366,38 @@ class RlPipeline(Pipeline):
             json.dumps(self._json_ready_debug_value(payload), indent=2, sort_keys=True),
         )
 
-    def _make_command_smoother(self):
+    def _make_command_interpolator(self):
         ctrl_type = getattr(self.policy, "ctrl_type", None)
         cfg_ctrl = next(
             (c for c in getattr(self.cfg, "ctrl", []) or [] if getattr(c, "ctrl_type", None) == ctrl_type),
             None,
         )
-        smoothing = getattr(cfg_ctrl, "command_smoothing", None)
-        if smoothing is None or not bool(getattr(smoothing, "enabled", False)):
+        interp_cfg = getattr(cfg_ctrl, "command_interpolation", None)
+        if interp_cfg is None or not bool(getattr(interp_cfg, "enabled", False)):
             return None
 
         try:
-            smoother = WbTeleopCommandSmoother(
-                cutoff_hz=float(getattr(smoothing, "cutoff_hz", 10.0)),
-                joint_snap_threshold=float(getattr(smoothing, "joint_snap_threshold", 1.0)),
+            interpolator = StreamedCommandInterpolator(
+                control_dt=self.dt,
+                target_lag_s=float(getattr(interp_cfg, "target_lag_s", 0.033)),
+                max_lag_s=float(getattr(interp_cfg, "max_lag_s", 0.2)),
+                history_s=float(getattr(interp_cfg, "history_s", 0.5)),
+                joint_snap_threshold=float(getattr(interp_cfg, "joint_snap_threshold", 1.0)),
             )
         except Exception as exc:
-            logger.warning("Failed to create wbteleop command smoother: %s", exc)
+            logger.warning("Failed to create command interpolator: %s", exc)
             return None
 
-        logger.info("Wbteleop command smoother enabled (cutoff=%.1f Hz)", float(smoothing.cutoff_hz))
-        return smoother
+        logger.info(
+            "Wbteleop command interpolator enabled (target_lag=%.3fs, max_lag=%.3fs)",
+            float(interp_cfg.target_lag_s),
+            float(interp_cfg.max_lag_s),
+        )
+        return interpolator
 
-    def _maybe_smooth_command(self, ctrl_data) -> None:
-        smoother = getattr(self, "_command_smoother", None)
-        if smoother is None:
+    def _maybe_interpolate_command(self, ctrl_data) -> None:
+        interpolator = getattr(self, "_command_interpolator", None)
+        if interpolator is None:
             return
         ctrl_type = getattr(self.policy, "ctrl_type", None)
         if ctrl_type is None:
@@ -398,7 +405,7 @@ class RlPipeline(Pipeline):
         payload = ctrl_data.get(ctrl_type)
         if not isinstance(payload, dict):
             return
-        smoother.smooth(payload, self.dt)
+        interpolator.update(payload)
 
     def _make_left_arm_joint_plot(self):
         debug_cfg = getattr(self.cfg, "debug", None)
@@ -428,13 +435,24 @@ class RlPipeline(Pipeline):
             if isinstance(maybe_payload, dict):
                 ctrl_payload = maybe_payload
 
+        # "retarget" is the raw, uninterpolated reference from the controller;
+        # "interp" is the same shoulder-roll joint after the command interpolator
+        # (command[:29] is the reference joint_pos in MuJoCo order). Together they
+        # show the before/after-interpolation comparison against the sim actual.
         retarget_joints = ctrl_payload.get("_retarget_left_arm_joints")
+
+        interp_joints = None
+        command = ctrl_payload.get("command")
+        if command is not None:
+            command = np.asarray(command, dtype=np.float32).reshape(-1)
+            if command.shape[0] >= 29:
+                interp_joints = left_arm_joints_or_nan(command[:29])
 
         actual_joints = left_arm_joints_or_nan(
             actual_dof_pos,
             joint_names=getattr(self.env, "joint_names", None),
         )
-        plot.push(time.time(), retarget_joints, actual_joints)
+        plot.push(time.time(), retarget_joints, interp_joints, actual_joints)
         plot.maybe_update()
 
     def reset(self):
@@ -566,7 +584,7 @@ class RlPipeline(Pipeline):
         t_last = t_now
 
         ctrl_data = self.ctrl_manager.get_ctrl_data(env_data)
-        self._maybe_smooth_command(ctrl_data)
+        self._maybe_interpolate_command(ctrl_data)
         t_now = time.perf_counter()
         timings["ctrl"] = t_now - t_last
         t_last = t_now

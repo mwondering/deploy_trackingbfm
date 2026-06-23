@@ -244,14 +244,25 @@ class PicoSourceMonitorCfg(Config):
     stale_repeat_s: float = 0.5
 
 
-class CommandSmoothingCfg(Config):
-    """Sim-rate smoothing of the retargeted reference command (see command_smoother)."""
+class CommandInterpolationCfg(Config):
+    """Control-rate interpolation of the retargeted reference command.
+
+    Time-based interpolation buffer (see streamed_command_interpolator): buffers
+    timestamped reference frames and resamples them to the control rate with
+    linear + SLERP interpolation, catch-up reset and dropout hold.
+    """
 
     enabled: bool = True
-    cutoff_hz: float = 10.0
-    """Critically damped filter cutoff; lower = smoother but more lag."""
+    target_lag_s: float = 0.033
+    """Playback trails the newest frame by this much (~one source period) so the
+    cursor sits between two real samples for true interpolation."""
+    max_lag_s: float = 0.2
+    """If playback falls further behind the newest frame than this, snap the
+    cursor forward (catch-up reset) to bound accumulated latency."""
+    history_s: float = 0.5
+    """How much past data to keep buffered for interpolation/look-back."""
     joint_snap_threshold: float = 1.0
-    """Per-joint step (rad) above which the filter snaps instead of blending (teleport guard)."""
+    """Per-joint step (rad) above which interpolation snaps instead of blending (teleport guard)."""
 
 
 class PicoLightSparseCtrlCfg(CtrlCfg):
@@ -310,7 +321,7 @@ class PicoRetargetTrackingBfmCtrlCfg(CtrlCfg):
     async_read: bool = True
     worker: PicoProcessWorkerCfg = PicoProcessWorkerCfg()
     source_monitor: PicoSourceMonitorCfg = PicoSourceMonitorCfg()
-    command_smoothing: CommandSmoothingCfg = CommandSmoothingCfg()
+    command_interpolation: CommandInterpolationCfg = CommandInterpolationCfg()
 
     triggers: dict[str, str] = {
         "LeftController.key_one": "[SHUTDOWN]",

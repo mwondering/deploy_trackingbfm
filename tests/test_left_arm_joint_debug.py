@@ -214,28 +214,30 @@ def test_left_arm_plot_keeps_matplotlib_panels_visible(monkeypatch):
     assert axes.shape == (1, 1)
     assert all(axis.facecolor is not None for axis in flat_axes)
     assert not any(axis.axis_off_called for axis in flat_axes)
-    assert len(flat_axes[0].plot_kwargs) == 2
+    assert len(flat_axes[0].plot_kwargs) == 3
     assert all(kwargs.get("marker") == "." for kwargs in flat_axes[0].plot_kwargs)
     manager = plot._fig.canvas.manager
     assert manager.window.geometry_value == "1000x520+60+60"
     assert manager.window.minsize_value == (700, 360)
 
 
-def test_left_arm_plot_draws_only_shoulder_roll_retarget_and_actual(monkeypatch):
+def test_left_arm_plot_draws_shoulder_roll_retarget_interp_and_actual(monkeypatch):
     axes_holder = []
     _fake_matplotlib_modules(monkeypatch, axes_holder)
     plot = LeftArmJointDebugPlot(update_hz=1_000_000.0)
 
     retarget = np.asarray([10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0], dtype=np.float32)
+    interp = np.asarray([30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0], dtype=np.float32)
     actual = np.asarray([20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0], dtype=np.float32)
 
-    plot.push(1.0, retarget_joints=retarget, actual_joints=actual)
-    plot.push(2.0, retarget_joints=retarget + 1.0, actual_joints=actual + 1.0)
+    plot.push(1.0, retarget_joints=retarget, interp_joints=interp, actual_joints=actual)
+    plot.push(2.0, retarget_joints=retarget + 1.0, interp_joints=interp + 1.0, actual_joints=actual + 1.0)
     plot.maybe_update()
 
-    retarget_line, actual_line = plot._lines
+    retarget_line, interp_line, actual_line = plot._lines
+    # shoulder roll is index 1 of the left-arm vector
     np.testing.assert_allclose(retarget_line.data[1], [11.0, 12.0])
+    np.testing.assert_allclose(interp_line.data[1], [31.0, 32.0])
     np.testing.assert_allclose(actual_line.data[1], [21.0, 22.0])
-    assert len(plot._lines) == 2
-    assert not hasattr(plot, "_raw")
+    assert len(plot._lines) == 3
 

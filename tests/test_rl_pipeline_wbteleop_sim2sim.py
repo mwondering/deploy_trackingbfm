@@ -385,16 +385,17 @@ def test_wbteleop_sim2sim_enables_left_arm_joint_plot_debug_config() -> None:
     assert cfg.debug.wbteleop_left_arm_plot_window_s == 10.0
 
 
-def test_left_arm_joint_plot_receives_retarget_and_actual_vectors() -> None:
+def test_left_arm_joint_plot_receives_retarget_interp_and_actual_vectors() -> None:
     pipeline = _make_pipeline_shell(g1_wbteleop_sim2sim())
     pipeline.policy = types.SimpleNamespace(ctrl_type="PicoRetargetTrackingBfmCtrl")
     retarget = np.arange(7, dtype=np.float32) + 10.0
+    command = np.concatenate([np.arange(29, dtype=np.float32) * 0.1, np.zeros(29, dtype=np.float32)])
     actual_dof = np.arange(29, dtype=np.float32) * 0.01
     calls = []
 
     class _FakePlot:
-        def push(self, timestamp_s, retarget_joints, actual_joints):
-            calls.append((timestamp_s, retarget_joints, actual_joints))
+        def push(self, timestamp_s, retarget_joints, interp_joints, actual_joints):
+            calls.append((timestamp_s, retarget_joints, interp_joints, actual_joints))
 
         def maybe_update(self):
             calls.append("update")
@@ -406,15 +407,17 @@ def test_left_arm_joint_plot_receives_retarget_and_actual_vectors() -> None:
             {
                 "PicoRetargetTrackingBfmCtrl": {
                     "_retarget_left_arm_joints": retarget,
+                    "command": command,
                 }
             }
         ),
         actual_dof,
     )
 
-    timestamp_s, got_retarget, got_actual = calls[0]
+    timestamp_s, got_retarget, got_interp, got_actual = calls[0]
     assert timestamp_s > 0.0
     np.testing.assert_allclose(got_retarget, retarget)
+    np.testing.assert_allclose(got_interp, command[:29][G1_LEFT_ARM_JOINT_INDICES])
     np.testing.assert_allclose(got_actual, actual_dof[G1_LEFT_ARM_JOINT_INDICES])
     assert calls[1] == "update"
 
@@ -426,8 +429,8 @@ def test_left_arm_joint_plot_updates_actual_without_pico_joint_fields() -> None:
     calls = []
 
     class _FakePlot:
-        def push(self, timestamp_s, retarget_joints, actual_joints):
-            calls.append((timestamp_s, retarget_joints, actual_joints))
+        def push(self, timestamp_s, retarget_joints, interp_joints, actual_joints):
+            calls.append((timestamp_s, retarget_joints, interp_joints, actual_joints))
 
         def maybe_update(self):
             calls.append("update")
@@ -439,9 +442,10 @@ def test_left_arm_joint_plot_updates_actual_without_pico_joint_fields() -> None:
         actual_dof,
     )
 
-    timestamp_s, got_retarget, got_actual = calls[0]
+    timestamp_s, got_retarget, got_interp, got_actual = calls[0]
     assert timestamp_s > 0.0
     assert got_retarget is None
+    assert got_interp is None
     np.testing.assert_allclose(got_actual, actual_dof[G1_LEFT_ARM_JOINT_INDICES])
     assert calls[1] == "update"
 
